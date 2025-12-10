@@ -1,20 +1,12 @@
-"""
-Middleware для логирования запросов
-"""
+
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 import time
 from shared.utils.logger import api_logger
-
-
 class LoggingMiddleware(BaseHTTPMiddleware):
-    """Middleware для логирования всех HTTP запросов"""
-    
     async def dispatch(self, request: Request, call_next):
         start_time = time.time()
-        
-        # Логирование входящего запроса
         api_logger.info(
             "Incoming request",
             extra={
@@ -24,12 +16,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 "client": request.client.host if request.client else None
             }
         )
-        
         try:
             response = await call_next(request)
             process_time = time.time() - start_time
-            
-            # Логирование ответа
             api_logger.info(
                 "Request completed",
                 extra={
@@ -39,7 +28,6 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                     "process_time": f"{process_time:.3f}s"
                 }
             )
-            
             return response
         except Exception as e:
             process_time = time.time() - start_time
@@ -53,4 +41,3 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 exc_info=True
             )
             raise
-

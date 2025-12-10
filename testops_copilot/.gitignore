@@ -55,4 +55,4 @@ Thumbs.db
 # Project specific
 testops_copilot/__pycache__/
 *.pyc
-
+docs/

@@ -9,6 +9,44 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "vector";
 
 -- ============================================
+-- LangGraph Checkpoint Tables (auto-created by LangGraph)
+-- ============================================
+
+-- Table: checkpoints (для LangGraph state management)
+CREATE TABLE IF NOT EXISTS checkpoints (
+    thread_id TEXT NOT NULL,
+    checkpoint_ns TEXT NOT NULL DEFAULT '',
+    checkpoint_id TEXT NOT NULL,
+    parent_checkpoint_id TEXT,
+    type TEXT,
+    checkpoint BYTEA NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_checkpoints_thread_id ON checkpoints(thread_id);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_parent_id ON checkpoints(parent_checkpoint_id);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_created_at ON checkpoints(created_at DESC);
+
+-- Table: checkpoint_writes (для atomic writes)
+CREATE TABLE IF NOT EXISTS checkpoint_writes (
+    thread_id TEXT NOT NULL,
+    checkpoint_ns TEXT NOT NULL DEFAULT '',
+    checkpoint_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    idx INTEGER NOT NULL,
+    channel TEXT NOT NULL,
+    type TEXT,
+    value BYTEA,
+    created_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+);
+
+CREATE INDEX IF NOT EXISTS idx_checkpoint_writes_thread_id ON checkpoint_writes(thread_id);
+CREATE INDEX IF NOT EXISTS idx_checkpoint_writes_checkpoint_id ON checkpoint_writes(checkpoint_id);
+
+-- ============================================
 -- ENUM Types
 -- ============================================
 CREATE TYPE request_status AS ENUM (
@@ -47,6 +85,16 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_api_key ON users(api_key);
+
+-- ============================================
+-- Пользователи по умолчанию
+-- ============================================
+INSERT INTO users (user_id, email, username, full_name, is_active, is_verified, api_key, api_quota_daily)
+VALUES 
+    ('00000000-0000-0000-0000-000000000001', 'user1@testops.local', 'user1', 'User 1', TRUE, TRUE, 'user1-api-key-2024', 1000),
+    ('00000000-0000-0000-0000-000000000002', 'user2@testops.local', 'user2', 'User 2', TRUE, TRUE, 'user2-api-key-2024', 1000),
+    ('00000000-0000-0000-0000-000000000003', 'user3@testops.local', 'user3', 'User 3', TRUE, TRUE, 'user3-api-key-2024', 1000)
+ON CONFLICT (user_id) DO NOTHING;
 
 -- ============================================
 -- Table: requests
@@ -117,6 +165,11 @@ CREATE INDEX IF NOT EXISTS idx_test_cases_allure_severity ON test_cases(allure_s
 CREATE INDEX IF NOT EXISTS idx_test_cases_created_at ON test_cases(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_test_cases_allure_tags ON test_cases USING GIN(allure_tags);
 CREATE INDEX IF NOT EXISTS idx_test_cases_covered_requirements ON test_cases USING GIN(covered_requirements);
+
+-- Индекс для pgvector semantic similarity search
+CREATE INDEX IF NOT EXISTS idx_test_cases_semantic_embedding ON test_cases 
+USING ivfflat (semantic_embedding vector_cosine_ops)
+WITH (lists = 100);
 
 -- ============================================
 -- Table: generation_metrics

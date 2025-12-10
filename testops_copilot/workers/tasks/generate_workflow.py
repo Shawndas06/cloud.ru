@@ -1,6 +1,4 @@
-"""
-Celery задача для генерации UI тест-кейсов
-"""
+
 from celery import Task
 from workers.celery_app import celery_app
 from shared.utils.database import get_db
@@ -15,13 +13,8 @@ import json
 import hashlib
 from datetime import datetime
 import asyncio
-
-
 class GenerateWorkflowTask(Task):
-    """Базовый класс для задачи генерации с обработкой ошибок"""
-    
     def on_failure(self, exc, task_id, args, kwargs, einfo):
-        """Обработка ошибок задачи"""
         request_id = kwargs.get("request_id") or (args[0] if args else None)
         if request_id:
             with get_db() as db:
@@ -30,8 +23,20 @@ class GenerateWorkflowTask(Task):
                     request.status = "failed"
                     request.error_message = str(exc)
                     db.commit()
-
-
+                    try:
+                        from shared.utils.email_service import email_service
+                        from shared.models.database import User
+                        if request.user_id:
+                            user = db.query(User).filter(User.user_id == request.user_id).first()
+                            if user and user.email:
+                                email_service.send_error_notification(
+                                    to=user.email,
+                                    request_id=str(request.request_id),
+                                    error_message=str(exc)
+                                )
+                    except Exception as e:
+                        from shared.utils.logger import agent_logger
+                        agent_logger.warning(f"Failed to send error email notification: {e}")
 @celery_app.task(
     bind=True,
     base=GenerateWorkflowTask,
@@ -45,48 +50,26 @@ def generate_test_cases_task(
     test_type: str,
     options: dict = None
 ):
-    """
-    Генерация UI тест-кейсов
-    
-    Args:
-        request_id: UUID запроса
-        url: URL для тестирования
-        requirements: Список требований
-        test_type: Тип тестов (manual, automated, both)
-        options: Дополнительные параметры
-    """
     options = options or {}
-    
     try:
-        # Обновление статуса
         with get_db() as db:
             request = db.query(Request).filter(Request.request_id == uuid.UUID(request_id)).first()
             if not request:
                 raise ValueError(f"Request {request_id} not found")
-            
             request.status = "processing"
             request.started_at = datetime.utcnow()
             db.commit()
-        
-        # Публикация события начала
         redis_client.publish_event(
             f"request:{request_id}",
             {"status": "processing", "step": "reconnaissance"}
         )
-        
-        # Шаг 1: Reconnaissance - анализ страницы
         recon_agent = ReconnaissanceAgent()
         page_structure = recon_agent.analyze_page(url, timeout=60)
-        
         redis_client.publish_event(
             f"request:{request_id}",
             {"status": "processing", "step": "generation"}
         )
-        
-        # Шаг 2: Generation - генерация тестов
         generator = GeneratorAgent()
-        
-        # Запуск асинхронной генерации
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -101,34 +84,40 @@ def generate_test_cases_task(
             )
         finally:
             loop.close()
-        
         redis_client.publish_event(
             f"request:{request_id}",
             {"status": "processing", "step": "validation", "tests_count": len(tests)}
         )
-        
-        # Шаг 3: Validation - валидация тестов
         validator = ValidatorAgent()
         validated_tests = []
-        
-        for test_code in tests:
+        from shared.utils.logger import agent_logger
+        agent_logger.info(f"Validating {len(tests)} tests")
+        for i, test_code in enumerate(tests):
             validation_result = validator.validate(test_code, validation_level="full")
+            agent_logger.info(f"Test {i+1} validation: passed={validation_result.get('passed', False)}, errors={len(validation_result.get('errors', []))}")
+            passed = validation_result.get("passed", False)
+            score = validation_result.get("score", 0)
+            agent_logger.info(f"Test {i+1} validation result: passed={passed}, score={score}, errors={len(validation_result.get('errors', []))}, warnings={len(validation_result.get('warnings', []))}")
             
-            if validation_result.get("passed", False):
+            if passed or score >= 50:
                 validated_tests.append({
                     "code": test_code,
                     "validation": validation_result
                 })
+                agent_logger.info(f"Test {i+1} added to validated_tests")
             else:
-                # Логируем ошибки валидации, но не блокируем процесс
-                print(f"Validation failed for test: {validation_result.get('errors', [])}")
-        
+                errors = validation_result.get('errors', [])
+                warnings = validation_result.get('warnings', [])
+                agent_logger.warning(f"Validation failed for test {i+1}: score={score}, errors={len(errors)}, warnings={len(warnings)}")
+                if errors:
+                    agent_logger.warning(f"Errors: {errors[:3]}")
+                if warnings:
+                    agent_logger.warning(f"Warnings: {warnings[:3]}")
+                print(f"Validation failed for test: score={score}, errors={errors}, warnings={warnings}")
         redis_client.publish_event(
             f"request:{request_id}",
             {"status": "processing", "step": "optimization", "validated_count": len(validated_tests)}
         )
-        
-        # Шаг 4: Optimization - оптимизация (если включено)
         optimized_tests = validated_tests
         if options.get("optimize", True) and len(validated_tests) > 1:
             optimizer = OptimizerAgent()
@@ -148,27 +137,19 @@ def generate_test_cases_task(
                 ]
             finally:
                 loop.close()
-        
-        # Шаг 5: Сохранение в БД
         with get_db() as db:
             request = db.query(Request).filter(Request.request_id == uuid.UUID(request_id)).first()
-            
             saved_tests = []
             for test_data in optimized_tests:
                 test_code = test_data["code"]
                 code_hash = hashlib.sha256(test_code.encode()).hexdigest()
-                
-                # Определение типа теста из кода
-                test_name = "Generated Test"
+                test_name = "Test"
                 if "def test_" in test_code:
                     import re
                     match = re.search(r'def\s+(test_\w+)', test_code)
                     if match:
                         test_name = match.group(1)
-                
-                # Определение типа (manual/automated)
                 actual_test_type = "automated" if "def test_" in test_code else "manual"
-                
                 test_case = TestCase(
                     request_id=request.request_id,
                     test_name=test_name,
@@ -183,42 +164,50 @@ def generate_test_cases_task(
                     "test_id": str(test_case.test_id),
                     "test_name": test_name
                 })
-            
             request.status = "completed"
             request.completed_at = datetime.utcnow()
-            request.result_summary = {
+            try:
+                from shared.utils.email_service import email_service
+                from shared.models.database import User
+                if request.user_id:
+                    user = db.query(User).filter(User.user_id == request.user_id).first()
+                    if user and user.email:
+                        email_service.send_generation_completed(
+                            to=user.email,
+                            request_id=str(request.request_id),
+                            tests_count=len(saved_tests),
+                            status="completed"
+                        )
+            except Exception as e:
+                from shared.utils.logger import agent_logger
+                agent_logger.warning(f"Failed to send email notification: {e}")
+            result_summary = {
                 "tests_generated": len(saved_tests),
                 "tests_validated": len(validated_tests),
                 "tests_optimized": len(optimized_tests),
                 "test_type": test_type
             }
+            request.result_summary = result_summary
             db.commit()
-        
-        # Публикация события завершения
         redis_client.publish_event(
             f"request:{request_id}",
             {
                 "status": "completed",
                 "tests_count": len(saved_tests),
-                "result_summary": request.result_summary
+                "result_summary": result_summary
             }
         )
-        
         return {
             "request_id": request_id,
             "status": "completed",
             "tests_count": len(saved_tests),
             "tests": saved_tests
         }
-    
     except Exception as e:
-        # Обработка ошибок
         error_msg = str(e)
         print(f"Error in generate_test_cases_task: {error_msg}")
         import traceback
         traceback.print_exc()
-        
-        # Обновление статуса в БД
         try:
             with get_db() as db:
                 request = db.query(Request).filter(Request.request_id == uuid.UUID(request_id)).first()
@@ -229,8 +218,6 @@ def generate_test_cases_task(
                     db.commit()
         except Exception as db_error:
             print(f"Error updating request status: {db_error}")
-        
-        # Публикация события об ошибке
         try:
             redis_client.publish_event(
                 f"request:{request_id}",
@@ -238,7 +225,4 @@ def generate_test_cases_task(
             )
         except Exception:
             pass
-        
         raise
-
-

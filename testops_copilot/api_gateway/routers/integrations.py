@@ -1,41 +1,22 @@
-"""
-Роутер для проверки интеграций с внешними системами
-"""
+
 from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
-
 from agents.test_plan.defect_integration import DefectIntegration
 from shared.utils.logger import api_logger
-
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
-
-
 class TestConnectionResponse(BaseModel):
-    """Ответ на запрос проверки подключения"""
     jira: Dict[str, Any]
     allure: Dict[str, Any]
     configuration_status: Dict[str, Any]
-
-
 @router.get("/test-connection", response_model=TestConnectionResponse)
 async def test_connection(
-    source: Optional[str] = "all"  # "jira", "allure", "all"
+    source: Optional[str] = "all"
 ):
-    """
-    Тестирование подключения к системам дефектов (Jira, Allure TestOps)
-    
-    Проверяет доступность и корректность credentials для интеграций.
-    """
     try:
         integration = DefectIntegration()
-        
-        # Проверка подключения
         connection_results = await integration.test_connection(source=source)
-        
-        # Статус конфигурации
         config_status = integration.get_configuration_status()
-        
         api_logger.info(
             "Integration connection test",
             extra={
@@ -44,32 +25,22 @@ async def test_connection(
                 "allure_connected": connection_results["allure"].get("connected", False)
             }
         )
-        
         return TestConnectionResponse(
             jira=connection_results["jira"],
             allure=connection_results["allure"],
             configuration_status=config_status
         )
-    
     except Exception as e:
         api_logger.error(f"Error testing connections: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error testing connections: {str(e)}"
         )
-
-
 @router.get("/configuration-status")
 async def get_configuration_status():
-    """
-    Получение статуса конфигурации интеграций
-    
-    Показывает какие credentials настроены, а какие отсутствуют.
-    """
     try:
         integration = DefectIntegration()
         config_status = integration.get_configuration_status()
-        
         return {
             "status": "ok",
             "configuration": config_status,
@@ -89,11 +60,9 @@ async def get_configuration_status():
                 }
             }
         }
-    
     except Exception as e:
         api_logger.error(f"Error getting configuration status: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error getting configuration status: {str(e)}"
         )
-

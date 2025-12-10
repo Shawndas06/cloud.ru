@@ -12,7 +12,7 @@ flower==2.0.1
 
 # LangGraph и агенты
 langgraph==0.0.20
-langchain==0.1.0
+langchain-core==0.1.8
 langchain-openai==0.0.2
 
 # База данных
@@ -54,15 +54,15 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 cryptography==41.0.7
 
-# GitLab интеграция
-python-gitlab==4.2.0
-
-# GitHub интеграция
-PyGithub==2.1.1
-
 # Логирование и мониторинг
 structlog==23.2.0
 prometheus-client==0.19.0
+
+# OpenTelemetry для distributed tracing
+opentelemetry-api==1.21.0
+opentelemetry-sdk==1.21.0
+opentelemetry-instrumentation-fastapi==0.42b0
+opentelemetry-instrumentation-celery==0.42b0
 
 # Code quality
 black==23.11.0
