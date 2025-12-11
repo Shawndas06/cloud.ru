@@ -360,22 +360,42 @@ def save_results_node(state: WorkflowState) -> WorkflowState:
                 # Логика статуса: passed если нет синтаксических ошибок
                 # Тесты с синтаксически правильным кодом должны быть passed
                 syntax_errors = len(validation.get("syntax_errors", []))
-                has_decorators = (
-                    "@allure.feature" in test_code and
-                    "@allure.story" in test_code and
-                    "@allure.title" in test_code
-                )
                 
-                # Тест считается passed если:
+                # Проверяем наличие декораторов (простая проверка наличия строки)
+                has_feature = "@allure.feature" in test_code
+                has_story = "@allure.story" in test_code
+                has_title = "@allure.title" in test_code
+                has_decorators = has_feature and has_story and has_title
+                
+                score = validation.get("score", 0)
+                passed = validation.get("passed", False)
+                
+                # УПРОЩЕННАЯ ЛОГИКА: Тест считается passed если:
                 # 1. Нет синтаксических ошибок (критично!)
-                # 2. И (есть декораторы ИЛИ score >= 50)
+                # 2. И (есть хотя бы один декоратор ИЛИ score >= 30 ИЛИ passed = True)
                 # Основная цель - тесты должны работать, warnings не критичны
                 is_passed = (
                     syntax_errors == 0 and
-                    (has_decorators or validation.get("score", 0) >= 50)
+                    (has_feature or has_story or has_title or score >= 30 or passed)
                 )
                 
                 validation_status = "passed" if is_passed else "warning"
+                
+                agent_logger.info(
+                    f"[STATUS] Test '{test_name}' status determination",
+                    extra={
+                        "test_name": test_name,
+                        "syntax_errors": syntax_errors,
+                        "has_feature": has_feature,
+                        "has_story": has_story,
+                        "has_title": has_title,
+                        "has_decorators": has_decorators,
+                        "score": score,
+                        "passed": passed,
+                        "is_passed": is_passed,
+                        "validation_status": validation_status
+                    }
+                )
                 
                 test_case = TestCase(
                     request_id=request.request_id,

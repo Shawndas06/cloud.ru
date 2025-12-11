@@ -21,12 +21,15 @@ class GeneratorAgent:
         automated_count = options.get("automated_count", 10)
         user_prompt = self._build_ui_prompt(url, page_structure, requirements, test_type, options)
         try:
+            # Увеличиваем max_tokens для генерации большего количества тестов
+            # Для 15+ тестов нужно больше токенов
+            max_tokens = 8192 if test_type in ["manual", "both"] else 4096
             response = await llm_client.generate(
                 prompt=user_prompt,
                 system_prompt=self.ui_system_prompt,
                 model=None,
                 temperature=0.3,
-                max_tokens=4096
+                max_tokens=max_tokens
             )
             if not response or "choices" not in response or len(response["choices"]) == 0:
                 print("LLM response is empty or invalid")
@@ -102,12 +105,14 @@ class GeneratorAgent:
             raise ValueError("openapi_spec or openapi_url is required")
         user_prompt = self._build_api_prompt(openapi_spec, endpoints, test_types)
         try:
+            # Увеличиваем max_tokens для генерации большего количества тестов
+            max_tokens = 8192
             response = await llm_client.generate(
                 prompt=user_prompt,
                 system_prompt=self.api_system_prompt,
                 model=None,
                 temperature=0.3,
-                max_tokens=4096
+                max_tokens=max_tokens
             )
             if not response or "choices" not in response or len(response["choices"]) == 0:
                 print("LLM response is empty or invalid")
@@ -201,34 +206,42 @@ class GeneratorAgent:
         test_type_instruction = ""
         if test_type == "both":
             test_type_instruction = f"""
-ВАЖНО: Сгенерируй ОБА типа тестов:
-1. Сначала {manual_count} РУЧНЫХ тестов (с @allure.manual декоратором, без Playwright кода, только описание шагов)
-2. Затем {automated_count} АВТОМАТИЗИРОВАННЫХ тестов (с Playwright кодом)
+КРИТИЧЕСКИ ВАЖНО: Сгенерируй ОБА типа тестов, КАЖДЫЙ ОТДЕЛЬНОЙ ФУНКЦИЕЙ:
+1. Сначала ТОЧНО {manual_count} РУЧНЫХ тестов (каждый с @allure.manual декоратором, без Playwright кода, только описание шагов)
+2. Затем ТОЧНО {automated_count} АВТОМАТИЗИРОВАННЫХ тестов (каждый с Playwright кодом)
 
-Ручные тесты должны быть в формате:
+ИТОГО ДОЛЖНО БЫТЬ {manual_count + automated_count} ОТДЕЛЬНЫХ ФУНКЦИЙ def test_...
+
+Ручные тесты должны быть в формате (каждый отдельной функцией):
 @allure.manual
-@allure.feature("...")
-@allure.story("...")
-@allure.title("...")
-def test_manual_...():
+@allure.feature("UI Tests")
+@allure.story("Manual Test Cases")
+@allure.title("Название теста")
+@allure.tag("NORMAL")
+def test_manual_1():
     \"\"\"Описание шагов теста\"\"\"
     pass
 
-Автоматизированные тесты должны быть в формате:
-@allure.feature("...")
-@allure.story("...")
-@allure.title("...")
-def test_automated_...(page: Page):
-    with allure.step("..."):
-        # Playwright код
+Автоматизированные тесты должны быть в формате (каждый отдельной функцией):
+@allure.feature("UI Tests")
+@allure.story("Automated Test Cases")
+@allure.title("Название теста")
+@allure.tag("NORMAL")
+def test_automated_1(page: Page):
+    with allure.step("Шаг 1"):
+        page.goto("/")
+    with allure.step("Проверка"):
+        expect(page.locator("body")).to_be_visible()
 """
         elif test_type == "manual":
             test_type_instruction = f"""
-ВАЖНО: Сгенерируй ТОЛЬКО {manual_count} РУЧНЫХ тестов (с @allure.manual декоратором, без Playwright кода, только описание шагов в docstring).
+КРИТИЧЕСКИ ВАЖНО: Сгенерируй ТОЧНО {manual_count} РУЧНЫХ тестов, КАЖДЫЙ ОТДЕЛЬНОЙ ФУНКЦИЕЙ def test_manual_...
+Каждый тест должен иметь полный набор декораторов ПЕРЕД функцией.
 """
         elif test_type == "automated":
             test_type_instruction = f"""
-ВАЖНО: Сгенерируй ТОЛЬКО {automated_count} АВТОМАТИЗИРОВАННЫХ тестов (с Playwright кодом).
+КРИТИЧЕСКИ ВАЖНО: Сгенерируй ТОЧНО {automated_count} АВТОМАТИЗИРОВАННЫХ тестов, КАЖДЫЙ ОТДЕЛЬНОЙ ФУНКЦИЕЙ def test_automated_...
+Каждый тест должен иметь полный набор декораторов ПЕРЕД функцией.
 """
         
         prompt = f"""Сгенерируй тест-кейсы для веб-страницы: {url}
@@ -239,6 +252,12 @@ def test_automated_...(page: Page):
 Тип тестов: {test_type}
 {test_type_instruction}
 
+КРИТИЧЕСКИ ВАЖНО: 
+- Сгенерируй ТОЧНО указанное количество тестов ({manual_count} ручных и/или {automated_count} автоматизированных)
+- Каждый тест должен быть отдельной функцией def test_...
+- Не объединяй тесты в одну функцию
+- Каждый тест должен иметь полный набор декораторов ПЕРЕД функцией
+
 Структура страницы:
 - Кнопки: {len(buttons)} найдено
 - Поля ввода: {len(inputs)} найдено  
@@ -246,7 +265,11 @@ def test_automated_...(page: Page):
 
 Важно:
 1. Все тесты должны использовать паттерн AAA (Arrange-Act-Assert)
-2. Все тесты должны иметь полный набор Allure декораторов
+2. Все тесты должны иметь полный набор Allure декораторов ПЕРЕД функцией:
+   - @allure.feature("...")
+   - @allure.story("...")
+   - @allure.title("...")
+   - @allure.tag("...")
 3. Код должен быть валидным Python кодом без синтаксических ошибок
 4. Автоматизированные тесты используют Playwright API и allure.step() для структурирования
 5. Ручные тесты используют @allure.manual и описание шагов в docstring
@@ -260,6 +283,7 @@ def test_automated_...(page: Page):
 - Множественные одинаковые клики подряд без проверки результата
 - Пустые циклы или бессмысленные повторения
 - Для ручных тестов использовать Playwright код
+- Объединять несколько тестов в одну функцию
 """
         return prompt
     def _build_api_prompt(
@@ -391,31 +415,32 @@ Endpoints для тестирования:
                 function_match = re.search(r'def\s+(test_\w+)', test_code)
                 if function_match:
                     func_name = function_match.group(1)
-                # Проверяем наличие всех обязательных декораторов
-                has_feature = re.search(r'@allure\.feature\s*\(', test_code)
-                has_story = re.search(r'@allure\.story\s*\(', test_code)
-                has_title = re.search(r'@allure\.title\s*\(', test_code)
-                has_tag = re.search(r'@allure\.tag\s*\(', test_code)
-                
-                # Логируем если декораторы отсутствуют
-                if not (has_feature and has_story and has_title and has_tag):
-                    from shared.utils.logger import agent_logger
-                    missing = []
-                    if not has_feature:
-                        missing.append("feature")
-                    if not has_story:
-                        missing.append("story")
-                    if not has_title:
-                        missing.append("title")
-                    if not has_tag:
-                        missing.append("tag")
-                    agent_logger.info(
-                        f"[GENERATION] Adding missing decorators to test {i+1}",
-                        extra={"missing_decorators": missing, "test_number": i+1}
-                    )
-                
-                # Если хотя бы одного декоратора нет, добавляем все
-                if not (has_feature and has_story and has_title and has_tag):
+                    
+                    # Проверяем наличие всех обязательных декораторов
+                    has_feature = re.search(r'@allure\.feature\s*\(', test_code)
+                    has_story = re.search(r'@allure\.story\s*\(', test_code)
+                    has_title = re.search(r'@allure\.title\s*\(', test_code)
+                    has_tag = re.search(r'@allure\.tag\s*\(', test_code)
+                    
+                    # Логируем если декораторы отсутствуют
+                    if not (has_feature and has_story and has_title and has_tag):
+                        from shared.utils.logger import agent_logger
+                        missing = []
+                        if not has_feature:
+                            missing.append("feature")
+                        if not has_story:
+                            missing.append("story")
+                        if not has_title:
+                            missing.append("title")
+                        if not has_tag:
+                            missing.append("tag")
+                        agent_logger.info(
+                            f"[GENERATION] Adding missing decorators to test {i+1}",
+                            extra={"missing_decorators": missing, "test_number": i+1}
+                        )
+                    
+                    # Если хотя бы одного декоратора нет, добавляем все
+                    if not (has_feature and has_story and has_title and has_tag):
                         test_title = func_name.replace('test_', '').replace('_', ' ').title()
                         # Определяем feature и story из названия теста
                         feature_name = "API Tests" if is_api_test else "UI Tests"

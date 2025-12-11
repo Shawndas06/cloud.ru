@@ -34,12 +34,13 @@ class CloudRuAPIGenerator:
             for test_case in filtered_test_cases:
                 prompt = self._build_test_prompt(endpoint, test_case, openapi_spec)
                 try:
+                    # Увеличиваем max_tokens для генерации большего количества тестов
                     response = await llm_client.generate(
                         prompt=prompt,
                         system_prompt=self.SYSTEM_PROMPT,
                         model=None,
                         temperature=0.3,
-                        max_tokens=2048
+                        max_tokens=4096
                     )
                     if not response or "choices" not in response or len(response["choices"]) == 0:
                         print(f"Empty LLM response for {endpoint['path']}")
