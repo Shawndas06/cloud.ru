@@ -88,6 +88,16 @@ def generate_api_tests_task(
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
+            from shared.utils.logger import agent_logger
+            agent_logger.info(
+                f"[GENERATION] Starting API test generation",
+                extra={
+                    "request_id": request_id,
+                    "openapi_url": openapi_url,
+                    "endpoints": endpoints,
+                    "test_types": test_types
+                }
+            )
             tests = loop.run_until_complete(
                 generator.generate_api_tests(
                     openapi_spec=spec_dict,
@@ -95,6 +105,13 @@ def generate_api_tests_task(
                     endpoints=endpoints,
                     test_types=test_types
                 )
+            )
+            agent_logger.info(
+                f"[GENERATION] API test generation completed",
+                extra={
+                    "request_id": request_id,
+                    "tests_generated": len(tests)
+                }
             )
         finally:
             loop.close()
@@ -105,12 +122,25 @@ def generate_api_tests_task(
         validator = ValidatorAgent()
         validated_tests = []
         from shared.utils.logger import agent_logger
-        agent_logger.info(f"Validating {len(tests)} API tests")
+        agent_logger.info(f"[VALIDATION] Starting validation of {len(tests)} API tests for request {request_id}")
         for i, test_code in enumerate(tests):
+            agent_logger.info(f"[VALIDATION] Validating API test {i+1}/{len(tests)}")
             validation_result = validator.validate(test_code, validation_level="full")
             passed = validation_result.get("passed", False)
             score = validation_result.get("score", 0)
-            agent_logger.info(f"API Test {i+1} validation result: passed={passed}, score={score}")
+            syntax_errors = len(validation_result.get('syntax_errors', []))
+            semantic_errors = len(validation_result.get('semantic_errors', []))
+            agent_logger.info(
+                f"[VALIDATION] API Test {i+1} validation result",
+                extra={
+                    "test_number": i+1,
+                    "passed": passed,
+                    "score": score,
+                    "syntax_errors": syntax_errors,
+                    "semantic_errors": semantic_errors,
+                    "has_decorators": "@allure.feature" in test_code and "@allure.story" in test_code and "@allure.title" in test_code
+                }
+            )
             
             syntax_errors = len(validation_result.get('syntax_errors', []))
             semantic_errors = len(validation_result.get('semantic_errors', []))
@@ -190,32 +220,47 @@ def generate_api_tests_task(
                     match = re.search(r'def\s+(test_\w+)', test_code)
                     if match:
                         test_name = match.group(1)
+                # Логика статуса: passed если нет синтаксических ошибок
+                # Тесты с синтаксически правильным кодом должны быть passed
+                validation = test_data.get("validation", {})
+                syntax_errors = len(validation.get("syntax_errors", []))
+                has_decorators = (
+                    "@allure.feature" in test_code and
+                    "@allure.story" in test_code and
+                    "@allure.title" in test_code
+                )
+                score = validation.get("score", 0)
+                
+                # Тест считается passed если:
+                # 1. Нет синтаксических ошибок (критично!)
+                # 2. И (есть декораторы ИЛИ score >= 50)
+                # Основная цель - тесты должны работать, warnings не критичны
+                is_passed = (
+                    syntax_errors == 0 and
+                    (has_decorators or score >= 50)
+                )
+                
+                validation_status = "passed" if is_passed else "warning"
+                
+                agent_logger.info(
+                    f"[STATUS] API Test '{test_name}' status determination",
+                    extra={
+                        "test_name": test_name,
+                        "syntax_errors": syntax_errors,
+                        "has_decorators": has_decorators,
+                        "score": score,
+                        "is_passed": is_passed,
+                        "validation_status": validation_status
+                    }
+                )
+                
                 test_case = TestCase(
                     request_id=request.request_id,
                     test_name=test_name,
                     test_code=test_code,
                     test_type="api",
                     code_hash=code_hash,
-                    # Логика статуса: passed если нет синтаксических ошибок
-                    # Тесты с синтаксически правильным кодом должны быть passed
-                    validation = test_data.get("validation", {})
-                    syntax_errors = len(validation.get("syntax_errors", []))
-                    has_decorators = (
-                        "@allure.feature" in test_code and
-                        "@allure.story" in test_code and
-                        "@allure.title" in test_code
-                    )
-                    
-                    # Тест считается passed если:
-                    # 1. Нет синтаксических ошибок (критично!)
-                    # 2. И (есть декораторы ИЛИ score >= 50)
-                    # Основная цель - тесты должны работать, warnings не критичны
-                    is_passed = (
-                        syntax_errors == 0 and
-                        (has_decorators or validation.get("score", 0) >= 50)
-                    )
-                    
-                    validation_status = "passed" if is_passed else "warning",
+                    validation_status=validation_status,
                     validation_issues=test_data.get("validation", {}).get("errors", [])
                 )
                 db.add(test_case)

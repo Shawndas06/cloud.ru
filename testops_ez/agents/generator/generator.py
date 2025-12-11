@@ -33,13 +33,45 @@ class GeneratorAgent:
                 return []
             generated_code = response["choices"][0]["message"]["content"]
             from shared.utils.logger import agent_logger
-            agent_logger.info(f"LLM generated code length: {len(generated_code)}")
+            agent_logger.info(
+                f"[GENERATION] LLM generated code",
+                extra={
+                    "code_length": len(generated_code),
+                    "test_type": test_type,
+                    "url": url
+                }
+            )
             if len(generated_code) > 0:
-                agent_logger.debug(f"LLM generated code (first 500 chars): {generated_code[:500]}")
+                agent_logger.debug(f"[GENERATION] Generated code preview (first 500 chars): {generated_code[:500]}")
             tests = self._extract_tests_from_code(generated_code)
-            agent_logger.info(f"Extracted {len(tests)} tests from generated code")
+            agent_logger.info(
+                f"[GENERATION] Extracted {len(tests)} tests from generated code",
+                extra={
+                    "tests_count": len(tests),
+                    "test_type": test_type,
+                    "expected_manual": options.get("manual_count", 15) if test_type in ["manual", "both"] else 0,
+                    "expected_automated": options.get("automated_count", 10) if test_type in ["automated", "both"] else 0
+                }
+            )
             if len(tests) == 0:
-                agent_logger.warning(f"No tests extracted. Generated code preview: {generated_code[:1000]}")
+                agent_logger.warning(
+                    f"[GENERATION] No tests extracted! Generated code preview: {generated_code[:1000]}",
+                    extra={"code_preview": generated_code[:1000]}
+                )
+            else:
+                # Логируем информацию о каждом тесте
+                for i, test in enumerate(tests):
+                    has_decorators = "@allure.feature" in test and "@allure.story" in test and "@allure.title" in test
+                    is_manual = "@allure.manual" in test
+                    agent_logger.debug(
+                        f"[GENERATION] Test {i+1} info",
+                        extra={
+                            "test_number": i+1,
+                            "has_decorators": has_decorators,
+                            "is_manual": is_manual,
+                            "code_length": len(test)
+                        }
+                    )
             return tests
         except Exception as e:
             print(f"Error generating UI tests: {e}")
@@ -359,14 +391,31 @@ Endpoints для тестирования:
                 function_match = re.search(r'def\s+(test_\w+)', test_code)
                 if function_match:
                     func_name = function_match.group(1)
-                    # Проверяем наличие всех обязательных декораторов
-                    has_feature = re.search(r'@allure\.feature\s*\(', test_code)
-                    has_story = re.search(r'@allure\.story\s*\(', test_code)
-                    has_title = re.search(r'@allure\.title\s*\(', test_code)
-                    has_tag = re.search(r'@allure\.tag\s*\(', test_code)
-                    
-                    # Если хотя бы одного декоратора нет, добавляем все
-                    if not (has_feature and has_story and has_title and has_tag):
+                # Проверяем наличие всех обязательных декораторов
+                has_feature = re.search(r'@allure\.feature\s*\(', test_code)
+                has_story = re.search(r'@allure\.story\s*\(', test_code)
+                has_title = re.search(r'@allure\.title\s*\(', test_code)
+                has_tag = re.search(r'@allure\.tag\s*\(', test_code)
+                
+                # Логируем если декораторы отсутствуют
+                if not (has_feature and has_story and has_title and has_tag):
+                    from shared.utils.logger import agent_logger
+                    missing = []
+                    if not has_feature:
+                        missing.append("feature")
+                    if not has_story:
+                        missing.append("story")
+                    if not has_title:
+                        missing.append("title")
+                    if not has_tag:
+                        missing.append("tag")
+                    agent_logger.info(
+                        f"[GENERATION] Adding missing decorators to test {i+1}",
+                        extra={"missing_decorators": missing, "test_number": i+1}
+                    )
+                
+                # Если хотя бы одного декоратора нет, добавляем все
+                if not (has_feature and has_story and has_title and has_tag):
                         test_title = func_name.replace('test_', '').replace('_', ' ').title()
                         # Определяем feature и story из названия теста
                         feature_name = "API Tests" if is_api_test else "UI Tests"

@@ -73,6 +73,16 @@ def generate_test_cases_task(
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
+            agent_logger.info(
+                f"[GENERATION] Starting test generation",
+                extra={
+                    "request_id": request_id,
+                    "url": url,
+                    "test_type": test_type,
+                    "requirements_count": len(requirements),
+                    "options": options
+                }
+            )
             tests = loop.run_until_complete(
                 generator.generate_ui_tests(
                     url=url,
@@ -81,6 +91,14 @@ def generate_test_cases_task(
                     test_type=test_type,
                     options=options
                 )
+            )
+            agent_logger.info(
+                f"[GENERATION] Test generation completed",
+                extra={
+                    "request_id": request_id,
+                    "tests_generated": len(tests),
+                    "test_type": test_type
+                }
             )
         finally:
             loop.close()
@@ -91,19 +109,31 @@ def generate_test_cases_task(
         validator = ValidatorAgent()
         validated_tests = []
         from shared.utils.logger import agent_logger
-        agent_logger.info(f"Validating {len(tests)} tests")
+        agent_logger.info(f"[VALIDATION] Starting validation of {len(tests)} tests for request {request_id}")
         for i, test_code in enumerate(tests):
+            agent_logger.info(f"[VALIDATION] Validating test {i+1}/{len(tests)}")
             validation_result = validator.validate(test_code, validation_level="full")
-            agent_logger.info(f"Test {i+1} validation: passed={validation_result.get('passed', False)}, errors={len(validation_result.get('errors', []))}")
+            
             passed = validation_result.get("passed", False)
             score = validation_result.get("score", 0)
-            agent_logger.info(f"Test {i+1} validation result: passed={passed}, score={score}, errors={len(validation_result.get('errors', []))}, warnings={len(validation_result.get('warnings', []))}")
-            
-            # Более гибкая логика: принимаем тест если нет синтаксических ошибок и score >= 50
-            # или если есть только warnings (не errors)
             syntax_errors = len(validation_result.get('syntax_errors', []))
             semantic_errors = len(validation_result.get('semantic_errors', []))
             logic_errors = len(validation_result.get('logic_errors', []))
+            warnings = len(validation_result.get('warnings', []))
+            
+            agent_logger.info(
+                f"[VALIDATION] Test {i+1} validation result",
+                extra={
+                    "test_number": i+1,
+                    "passed": passed,
+                    "score": score,
+                    "syntax_errors": syntax_errors,
+                    "semantic_errors": semantic_errors,
+                    "logic_errors": logic_errors,
+                    "warnings": warnings,
+                    "has_decorators": "@allure.feature" in test_code and "@allure.story" in test_code and "@allure.title" in test_code
+                }
+            )
             
             # Принимаем тест если:
             # 1. Нет синтаксических ошибок И
@@ -118,21 +148,33 @@ def generate_test_cases_task(
                     "code": test_code,
                     "validation": validation_result
                 })
-                agent_logger.info(f"Test {i+1} added to validated_tests")
+                agent_logger.info(f"[VALIDATION] Test {i+1} ACCEPTED - added to validated_tests (passed={passed}, score={score})")
             else:
                 errors = validation_result.get('errors', [])
-                warnings = validation_result.get('warnings', [])
-                agent_logger.warning(f"Validation failed for test {i+1}: score={score}, errors={len(errors)}, warnings={len(warnings)}")
+                agent_logger.warning(
+                    f"[VALIDATION] Test {i+1} has issues but will be added",
+                    extra={
+                        "test_number": i+1,
+                        "score": score,
+                        "errors_count": len(errors),
+                        "warnings_count": warnings,
+                        "syntax_errors": syntax_errors,
+                        "semantic_errors": semantic_errors,
+                        "logic_errors": logic_errors
+                    }
+                )
                 if errors:
-                    agent_logger.warning(f"Errors: {errors[:3]}")
-                if warnings:
-                    agent_logger.warning(f"Warnings: {warnings[:3]}")
+                    agent_logger.warning(f"[VALIDATION] Test {i+1} errors: {errors[:3]}")
+                if validation_result.get('warnings'):
+                    agent_logger.warning(f"[VALIDATION] Test {i+1} warnings: {validation_result.get('warnings', [])[:3]}")
                 # Все равно добавляем тест, но с предупреждением
                 validated_tests.append({
                     "code": test_code,
                     "validation": validation_result
                 })
-                agent_logger.info(f"Test {i+1} added to validated_tests despite issues")
+                agent_logger.info(f"[VALIDATION] Test {i+1} added to validated_tests despite issues")
+        
+        agent_logger.info(f"[VALIDATION] Validation completed: {len(validated_tests)}/{len(tests)} tests validated")
         redis_client.publish_event(
             f"request:{request_id}",
             {"status": "processing", "step": "optimization", "validated_count": len(validated_tests)}
@@ -169,32 +211,48 @@ def generate_test_cases_task(
                     if match:
                         test_name = match.group(1)
                 actual_test_type = "automated" if "def test_" in test_code else "manual"
+                
+                # Логика статуса: passed если нет синтаксических ошибок
+                # Тесты с синтаксически правильным кодом должны быть passed
+                validation = test_data.get("validation", {})
+                syntax_errors = len(validation.get("syntax_errors", []))
+                has_decorators = (
+                    "@allure.feature" in test_code and
+                    "@allure.story" in test_code and
+                    "@allure.title" in test_code
+                )
+                score = validation.get("score", 0)
+                
+                # Тест считается passed если:
+                # 1. Нет синтаксических ошибок (критично!)
+                # 2. И (есть декораторы ИЛИ score >= 50)
+                # Основная цель - тесты должны работать, warnings не критичны
+                is_passed = (
+                    syntax_errors == 0 and
+                    (has_decorators or score >= 50)
+                )
+                
+                validation_status = "passed" if is_passed else "warning"
+                
+                agent_logger.info(
+                    f"[STATUS] Test '{test_name}' status determination",
+                    extra={
+                        "test_name": test_name,
+                        "syntax_errors": syntax_errors,
+                        "has_decorators": has_decorators,
+                        "score": score,
+                        "is_passed": is_passed,
+                        "validation_status": validation_status
+                    }
+                )
+                
                 test_case = TestCase(
                     request_id=request.request_id,
                     test_name=test_name,
                     test_code=test_code,
                     test_type=actual_test_type,
                     code_hash=code_hash,
-                    # Логика статуса: passed если нет синтаксических ошибок
-                    # Тесты с синтаксически правильным кодом должны быть passed
-                    validation = test_data.get("validation", {})
-                    syntax_errors = len(validation.get("syntax_errors", []))
-                    has_decorators = (
-                        "@allure.feature" in test_code and
-                        "@allure.story" in test_code and
-                        "@allure.title" in test_code
-                    )
-                    
-                    # Тест считается passed если:
-                    # 1. Нет синтаксических ошибок (критично!)
-                    # 2. И (есть декораторы ИЛИ score >= 50)
-                    # Основная цель - тесты должны работать, warnings не критичны
-                    is_passed = (
-                        syntax_errors == 0 and
-                        (has_decorators or validation.get("score", 0) >= 50)
-                    )
-                    
-                    validation_status = "passed" if is_passed else "warning",
+                    validation_status=validation_status,
                     validation_issues=test_data.get("validation", {}).get("errors", [])
                 )
                 db.add(test_case)
