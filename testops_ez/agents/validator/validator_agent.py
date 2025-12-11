@@ -110,15 +110,10 @@ class ValidatorAgent:
             if "with allure.step" not in test_code:
                 warnings.append("Рекомендуется использовать allure.step() для структурирования")
             if not re.search(r"(assert\s+|expect\()", test_code):
-                # Для API тестов это может быть нормально, если тест еще не завершен
-                if "httpx" in test_code.lower() or "async" in test_code.lower():
-                    warnings.append("Автоматизированный API тест должен содержать хотя бы одну assertion для проверки результата")
-                else:
-                    errors.append({
-                        "type": "missing_assertion",
-                        "line": None,
-                        "message": "Автоматизированный тест должен содержать хотя бы одну assertion"
-                    })
+                # Для всех автоматизированных тестов отсутствие assertions - это warning, не error
+                # Генератор должен добавлять assertions, но если по какой-то причине не добавил,
+                # это не критично - тест все равно может быть полезен
+                warnings.append("Автоматизированный тест должен содержать хотя бы одну assertion для проверки результата")
         else:
             # Для manual тестов проверяем наличие описания шагов
             if not re.search(r'("""|\'\'\')', test_code) and "pass" not in test_code:

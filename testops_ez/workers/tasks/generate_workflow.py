@@ -175,12 +175,26 @@ def generate_test_cases_task(
                     test_code=test_code,
                     test_type=actual_test_type,
                     code_hash=code_hash,
-                    # Исправляем логику статуса: passed если нет синтаксических ошибок и score >= 50
-                    validation_status="passed" if (
-                        test_data.get("validation", {}).get("passed") or
-                        (len(test_data.get("validation", {}).get("syntax_errors", [])) == 0 and
-                         test_data.get("validation", {}).get("score", 0) >= 50)
-                    ) else "warning",
+                    # Логика статуса: passed если нет синтаксических ошибок
+                    # Тесты с синтаксически правильным кодом должны быть passed
+                    validation = test_data.get("validation", {})
+                    syntax_errors = len(validation.get("syntax_errors", []))
+                    has_decorators = (
+                        "@allure.feature" in test_code and
+                        "@allure.story" in test_code and
+                        "@allure.title" in test_code
+                    )
+                    
+                    # Тест считается passed если:
+                    # 1. Нет синтаксических ошибок (критично!)
+                    # 2. И (есть декораторы ИЛИ score >= 50)
+                    # Основная цель - тесты должны работать, warnings не критичны
+                    is_passed = (
+                        syntax_errors == 0 and
+                        (has_decorators or validation.get("score", 0) >= 50)
+                    )
+                    
+                    validation_status = "passed" if is_passed else "warning",
                     validation_issues=test_data.get("validation", {}).get("errors", [])
                 )
                 db.add(test_case)

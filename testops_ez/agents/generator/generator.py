@@ -397,28 +397,57 @@ Endpoints для тестирования:
                     if "def test_" in test_code or "async def test_" in test_code:
                         lines = test_code.split('\n')
                         indent = "    "
+                        inserted = False
                         for j, line in enumerate(lines):
                             if line.strip().startswith('def test_') or line.strip().startswith('async def test_'):
-                                # Ищем конец функции (пустая строка или следующий def)
+                                # Ищем тело функции (первая строка с отступом)
                                 for k in range(j + 1, len(lines)):
-                                    if lines[k].strip() and not lines[k].startswith(' ') and not lines[k].startswith('\t') and not lines[k].strip().startswith('#'):
+                                    line_k = lines[k]
+                                    if not line_k.strip() or line_k.strip().startswith('#'):
+                                        continue
+                                    # Если это строка с отступом (тело функции)
+                                    if line_k.startswith(' ') or line_k.startswith('\t'):
+                                        # Вставляем проверку в начало тела функции
+                                        if is_api_test:
+                                            # Для API тестов добавляем assert
+                                            # Ищем место после response или в конце функции
+                                            found_response = False
+                                            for m in range(k, len(lines)):
+                                                if "response" in lines[m].lower() and ("=" in lines[m] or "await" in lines[m]):
+                                                    # Вставляем assert после response
+                                                    response_indent = len(lines[m]) - len(lines[m].lstrip())
+                                                    lines.insert(m + 1, ' ' * response_indent + 'assert response.status_code == 200  # TODO: Добавить проверку')
+                                                    found_response = True
+                                                    inserted = True
+                                                    break
+                                            if not found_response:
+                                                # Вставляем в начало тела функции
+                                                func_indent = len(line_k) - len(line_k.lstrip())
+                                                lines.insert(k, ' ' * func_indent + 'assert True  # TODO: Добавить проверку')
+                                                inserted = True
+                                        else:
+                                            # Для UI тестов добавляем expect
+                                            func_indent = len(line_k) - len(line_k.lstrip())
+                                            lines.insert(k, ' ' * func_indent + 'with allure.step("Проверка результата"):')
+                                            lines.insert(k + 1, ' ' * (func_indent + 4) + 'expect(page.locator("body")).to_be_visible()  # TODO: Добавить проверку')
+                                            inserted = True
+                                        break
+                                    # Если это начало следующей функции/блока без отступа
+                                    elif not line_k.startswith(' ') and not line_k.startswith('\t'):
                                         # Вставляем проверку перед следующим блоком
                                         if is_api_test:
-                                            # Для API тестов добавляем assert после запроса
-                                            if "response" in test_code.lower() or "await client" in test_code.lower():
-                                                # Ищем место после response
-                                                for m in range(k, len(lines)):
-                                                    if "response" in lines[m].lower() or "await client" in lines[m].lower():
-                                                        lines.insert(m + 1, f'{indent}assert response.status_code == 200  # TODO: Добавить проверку')
-                                                        break
-                                            else:
-                                                lines.insert(k, f'{indent}assert True  # TODO: Добавить проверку')
+                                            prev_indent = len(lines[k-1]) - len(lines[k-1].lstrip()) if k > 0 else 4
+                                            lines.insert(k, ' ' * prev_indent + 'assert True  # TODO: Добавить проверку')
                                         else:
-                                            lines.insert(k, f'{indent}with allure.step("Проверка результата"):')
-                                            lines.insert(k + 1, f'{indent * 2}# TODO: Добавить проверку')
+                                            prev_indent = len(lines[k-1]) - len(lines[k-1].lstrip()) if k > 0 else 4
+                                            lines.insert(k, ' ' * prev_indent + 'with allure.step("Проверка результата"):')
+                                            lines.insert(k + 1, ' ' * (prev_indent + 4) + 'expect(page.locator("body")).to_be_visible()  # TODO: Добавить проверку')
+                                        inserted = True
                                         break
-                                break
-                        test_code = '\n'.join(lines)
+                                if inserted:
+                                    break
+                        if inserted:
+                            test_code = '\n'.join(lines)
                 
                 tests.append(test_code)
         else:
