@@ -150,11 +150,12 @@ def generate_api_tests_task(
             
             # Принимаем тест если нет критических синтаксических ошибок
             # Для API тестов более мягкая валидация - принимаем если код выглядит как тест
+            syntax_errors = len(validation_result.get('syntax_errors', []))
+            semantic_errors = len(validation_result.get('semantic_errors', []))
+            
             is_valid_test = (
-                passed or 
-                (syntax_errors == 0 and score >= 10) or
-                (syntax_errors == 0 and "def test_" in test_code and "assert" in test_code) or
-                (syntax_errors <= 1 and "async def test_" in test_code and "httpx" in test_code)
+                syntax_errors == 0 and
+                (passed or score >= 50 or (semantic_errors == 0 and "def test_" in test_code and "assert" in test_code))
             )
             
             if is_valid_test:
@@ -195,7 +196,12 @@ def generate_api_tests_task(
                     test_code=test_code,
                     test_type="api",
                     code_hash=code_hash,
-                    validation_status="passed" if test_data.get("validation", {}).get("passed") else "warning",
+                    # Исправляем логику статуса: passed если нет синтаксических ошибок и score >= 50
+                    validation_status="passed" if (
+                        test_data.get("validation", {}).get("passed") or
+                        (len(test_data.get("validation", {}).get("syntax_errors", [])) == 0 and
+                         test_data.get("validation", {}).get("score", 0) >= 50)
+                    ) else "warning",
                     validation_issues=test_data.get("validation", {}).get("errors", [])
                 )
                 db.add(test_case)

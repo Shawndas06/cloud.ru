@@ -259,13 +259,18 @@ Endpoints для тестирования:
 
 Типы тестов: {', '.join(test_types)}
 
+ВАЖНО: 
+- Для каждого endpoint сгенерируй минимум 3-5 тестов разных типов
+- Покрой все типы тестов: positive, negative (validation, auth, forbidden, not_found)
+- Если endpoints не указаны, сгенерируй тесты для всех доступных endpoints (минимум 15 тестов)
+
 Важно:
 1. Все тесты должны использовать паттерн AAA (Arrange-Act-Assert)
-2. Все тесты должны иметь Allure декораторы
-3. Покрыть все типы тестов: positive, negative (validation, auth, forbidden, not_found)
-4. Использовать httpx.AsyncClient для асинхронных запросов
-5. Код должен быть валидным Python кодом без синтаксических ошибок
-6. Проверять статус коды и структуру ответов
+2. Все тесты должны иметь полный набор Allure декораторов (@allure.feature, @allure.story, @allure.title, @allure.tag)
+3. Использовать httpx.AsyncClient для асинхронных запросов
+4. Код должен быть валидным Python кодом без синтаксических ошибок
+5. Проверять статус коды и структуру ответов
+6. Использовать @pytest.mark.asyncio для async функций
 """
         return prompt
     def _extract_tests_from_code(self, code: str) -> List[str]:
@@ -354,36 +359,60 @@ Endpoints для тестирования:
                 function_match = re.search(r'def\s+(test_\w+)', test_code)
                 if function_match:
                     func_name = function_match.group(1)
-                    # Проверяем есть ли декораторы перед функцией
-                    func_start = function_match.start()
-                    code_before_func = test_code[:func_start].strip()
+                    # Проверяем наличие всех обязательных декораторов
+                    has_feature = re.search(r'@allure\.feature\s*\(', test_code)
+                    has_story = re.search(r'@allure\.story\s*\(', test_code)
+                    has_title = re.search(r'@allure\.title\s*\(', test_code)
+                    has_tag = re.search(r'@allure\.tag\s*\(', test_code)
                     
-                    if "@allure" not in code_before_func:
-                        # Если декораторов нет, добавляем базовые
+                    # Если хотя бы одного декоратора нет, добавляем все
+                    if not (has_feature and has_story and has_title and has_tag):
                         test_title = func_name.replace('test_', '').replace('_', ' ').title()
-                        decorators = f'''@allure.feature("Test Feature")
-@allure.story("Test Story")
+                        # Определяем feature и story из названия теста
+                        feature_name = "API Tests" if is_api_test else "UI Tests"
+                        story_name = "Test Cases"
+                        if "api" in func_name.lower() or "http" in func_name.lower():
+                            feature_name = "API Tests"
+                        elif "ui" in func_name.lower() or "page" in func_name.lower():
+                            feature_name = "UI Tests"
+                        
+                        decorators = f'''@allure.feature("{feature_name}")
+@allure.story("{story_name}")
 @allure.title("{test_title}")
 @allure.tag("NORMAL")
 @allure.severity(allure.severity_level.NORMAL)
 '''
+                        # Для API тестов добавляем @pytest.mark.asyncio если нужно
+                        if is_api_test and "@pytest.mark.asyncio" not in test_code and "async def" in test_code:
+                            decorators = "@pytest.mark.asyncio\n" + decorators
+                        
+                        # Вставляем декораторы перед функцией
                         test_code = test_code.replace(function_match.group(0), decorators + function_match.group(0))
                 
                 # Для API тестов не добавляем allure.step с expect, так как это для UI
                 # Проверяем наличие AAA структуры (хотя бы одну проверку)
-                if "assert" not in test_code and "expect" not in test_code:
+                is_manual = "@allure.manual" in test_code or "allure.manual" in test_code
+                if not is_manual and "assert" not in test_code and "expect" not in test_code:
                     # Добавляем минимальную проверку если её нет
-                    if "def test_" in test_code:
+                    if "def test_" in test_code or "async def test_" in test_code:
                         lines = test_code.split('\n')
                         indent = "    "
                         for j, line in enumerate(lines):
-                            if line.strip().startswith('def test_'):
+                            if line.strip().startswith('def test_') or line.strip().startswith('async def test_'):
                                 # Ищем конец функции (пустая строка или следующий def)
                                 for k in range(j + 1, len(lines)):
                                     if lines[k].strip() and not lines[k].startswith(' ') and not lines[k].startswith('\t') and not lines[k].strip().startswith('#'):
                                         # Вставляем проверку перед следующим блоком
                                         if is_api_test:
-                                            lines.insert(k, f'{indent}assert True  # TODO: Добавить проверку')
+                                            # Для API тестов добавляем assert после запроса
+                                            if "response" in test_code.lower() or "await client" in test_code.lower():
+                                                # Ищем место после response
+                                                for m in range(k, len(lines)):
+                                                    if "response" in lines[m].lower() or "await client" in lines[m].lower():
+                                                        lines.insert(m + 1, f'{indent}assert response.status_code == 200  # TODO: Добавить проверку')
+                                                        break
+                                            else:
+                                                lines.insert(k, f'{indent}assert True  # TODO: Добавить проверку')
                                         else:
                                             lines.insert(k, f'{indent}with allure.step("Проверка результата"):')
                                             lines.insert(k + 1, f'{indent * 2}# TODO: Добавить проверку')

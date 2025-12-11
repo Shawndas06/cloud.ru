@@ -80,13 +80,45 @@ class CloudRuAPIGenerator:
         test_pattern = r'def\s+(test_\w+)\s*\([^)]*\):'
         matches = list(re.finditer(test_pattern, code))
         if not matches:
+            # Если нет тестов, добавляем импорты и декораторы к коду
+            if "import allure" not in code:
+                code = "import pytest\nimport allure\nimport httpx\nimport asyncio\n\n" + code
             return [code]
         tests = []
         for i, match in enumerate(matches):
             start = match.start()
             end = matches[i + 1].start() if i + 1 < len(matches) else len(code)
             test_code = code[start:end].strip()
+            
+            # Добавляем импорты если их нет
             if "import allure" not in test_code:
-                test_code = "import allure\nimport httpx\nimport pytest\n\n" + test_code
+                test_code = "import pytest\nimport allure\nimport httpx\nimport asyncio\n\n" + test_code
+            
+            # Проверяем наличие всех обязательных декораторов
+            has_feature = re.search(r'@allure\.feature\s*\(', test_code)
+            has_story = re.search(r'@allure\.story\s*\(', test_code)
+            has_title = re.search(r'@allure\.title\s*\(', test_code)
+            has_tag = re.search(r'@allure\.tag\s*\(', test_code)
+            
+            function_match = re.search(r'def\s+(test_\w+)', test_code)
+            if function_match:
+                func_name = function_match.group(1)
+                
+                # Если хотя бы одного декоратора нет, добавляем все
+                if not (has_feature and has_story and has_title and has_tag):
+                    test_title = func_name.replace('test_', '').replace('_', ' ').title()
+                    decorators = f'''@pytest.mark.asyncio
+@allure.feature("API: Cloud.ru")
+@allure.story("API Tests")
+@allure.title("{test_title}")
+@allure.tag("API", "NORMAL")
+@allure.severity(allure.severity_level.NORMAL)
+'''
+                    # Вставляем декораторы перед функцией
+                    test_code = test_code.replace(function_match.group(0), decorators + function_match.group(0))
+                elif "async def" in test_code and "@pytest.mark.asyncio" not in test_code:
+                    # Добавляем @pytest.mark.asyncio если его нет
+                    test_code = "@pytest.mark.asyncio\n" + test_code
+            
             tests.append(test_code)
         return tests
