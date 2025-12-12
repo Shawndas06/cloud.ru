@@ -142,31 +142,45 @@ async def get_task_status(
         if request.started_at:
             from datetime import timedelta
             response_data["estimated_completion"] = request.started_at + timedelta(minutes=2)
-    if request.status == "completed":
+    # Возвращаем result_summary если он есть, независимо от статуса
+    if request.result_summary:
         response_data["result_summary"] = request.result_summary
-        if include_tests:
-            tests = db.query(TestCase).filter(TestCase.request_id == task_id).all()
-            response_data["tests"] = [
-                {
-                    "test_id": str(test.test_id),
-                    "test_name": test.test_name,
-                    "test_code": test.test_code,
-                    "priority": test.priority,
-                    "allure_tags": test.allure_tags
-                }
-                for test in tests
-            ]
-        if include_metrics:
-            metrics = db.query(GenerationMetric).filter(GenerationMetric.request_id == task_id).all()
-            response_data["metrics"] = [
-                {
-                    "agent_name": metric.agent_name,
-                    "duration_ms": metric.duration_ms,
-                    "status": metric.status,
-                    "llm_tokens_total": metric.llm_tokens_total
-                }
-                for metric in metrics
-            ]
+    
+    # Возвращаем тесты если запрошено, независимо от статуса
+    if include_tests:
+        try:
+        tests = db.query(TestCase).filter(TestCase.request_id == task_id).all()
+        response_data["tests"] = [
+            {
+                "test_id": str(test.test_id),
+                "test_name": test.test_name,
+                "test_type": test.test_type,
+                "test_code": test.test_code,
+                "priority": test.priority,
+                "allure_tags": test.allure_tags,
+                "validation_status": test.validation_status,
+                "created_at": test.created_at.isoformat() if test.created_at else None
+            }
+            for test in tests
+        ]
+        except Exception as e:
+            from shared.utils.logger import api_logger
+            api_logger.error(f"Error fetching tests for task {task_id}: {e}", exc_info=True)
+            response_data["tests"] = []
+    
+    # Возвращаем метрики если запрошено, независимо от статуса
+    if include_metrics:
+        metrics = db.query(GenerationMetric).filter(GenerationMetric.request_id == task_id).all()
+        response_data["metrics"] = [
+            {
+                "agent_name": metric.agent_name,
+                "duration_ms": metric.duration_ms,
+                "status": metric.status,
+                "llm_tokens_total": metric.llm_tokens_total
+            }
+            for metric in metrics
+        ]
+    
     if request.status == "failed":
         response_data["error_message"] = request.error_message
     return TaskStatusResponse(**response_data)

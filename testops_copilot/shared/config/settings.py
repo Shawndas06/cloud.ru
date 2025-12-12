@@ -60,8 +60,8 @@ class Settings(BaseSettings):
     jira_email: Optional[str] = None
     allure_testops_url: Optional[str] = None
     allure_testops_token: Optional[str] = None
-    rate_limit_per_minute: int = 1000
-    rate_limit_burst: int = 100
+    rate_limit_per_minute: int = 10000
+    rate_limit_burst: int = 1000
     celery_broker_url: Optional[str] = None
     celery_result_backend: Optional[str] = None
     @property

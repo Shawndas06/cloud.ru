@@ -9,46 +9,192 @@
 ## Быстрый старт
 
 ### Требования
-- Docker и Docker Compose
-- Python 3.10+
-- PostgreSQL 15+ с расширением pgvector
-- Redis 7+
+- Docker и Docker Compose (версия 2.0+)
+- API ключ для Cloud.ru Evolution Foundation Model
+
+**Примечание:** PostgreSQL и Redis запускаются автоматически через Docker Compose, отдельная установка не требуется.
 
 ### Запуск проекта
+
+**Шаг 1: Клонирование и настройка**
 
 ```bash
 # Переход в директорию проекта
 cd testops_copilot
 
-# Настройка переменных окружения
-cp .env.example .env
-# Отредактируйте .env файл, добавив необходимые ключи API
+# Настройка API ключа (создайте файл .env или используйте переменные окружения)
+export CLOUD_RU_API_KEY="your_api_key_here"
+# Или создайте .env файл:
+# echo "CLOUD_RU_API_KEY=your_api_key_here" > .env
+```
 
-# Запуск всех сервисов
+**Шаг 2: Запуск всех сервисов**
+
+```bash
+# Запуск всех сервисов в фоновом режиме
 docker-compose up -d
+
+# Ожидание инициализации (30-60 секунд)
+sleep 30
 
 # Проверка статуса
 docker-compose ps
 ```
 
-### Проверка работоспособности
+**Шаг 3: Проверка работоспособности**
 
 ```bash
-# Health check
-curl http://localhost:8000/health
+# Проверка API Gateway
+curl http://213.171.31.204:8000/health
 
-# API документация
-open http://localhost:8000/docs
+# Открыть API документацию
+open http://213.171.31.204:8000/docs
+
+# Открыть Frontend
+open http://213.171.31.204:3000
 ```
+
+**Шаг 4: Первый тест**
+
+Через Frontend (http://213.171.31.204:3000):
+1. Перейдите на страницу "Генерация"
+2. Выберите вкладку "UI Тесты"
+3. Введите URL: `https://cloud.ru/calculator`
+4. Добавьте требования
+5. Нажмите "Сгенерировать тесты"
+6. Перейдите на страницу "Задачи" для отслеживания прогресса
+
+Или через API:
+```bash
+curl -X POST "http://213.171.31.204:8000/api/v1/generate/test-cases" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://cloud.ru/calculator",
+    "requirements": ["Проверить главную страницу"],
+    "test_type": "both"
+  }'
+```
+
+### Остановка проекта
+
+```bash
+# Остановка всех сервисов
+docker-compose down
+
+# Остановка с удалением volumes (удалит все данные)
+docker-compose down -v
+```
+
+### Просмотр логов
+
+```bash
+# Логи всех сервисов
+docker-compose logs -f
+
+# Логи конкретного сервиса
+docker-compose logs -f api_gateway
+docker-compose logs -f celery_worker
+docker-compose logs -f frontend
+```
+
+### Дополнительные проверки
+
+```bash
+# Проверка базы данных
+docker-compose exec postgres psql -U testops -d testops_copilot -c "SELECT 1;"
+
+# Проверка Redis
+docker-compose exec redis redis-cli ping
+
+# Flower (Celery monitoring)
+open http://213.171.31.204:5555
+```
+
+**Примечание:** База данных автоматически инициализируется при первом запуске через `scripts/init_db.sql`. Если нужно пересоздать схему, используйте `docker-compose down -v && docker-compose up -d`.
 
 ---
 
 ## Основные возможности
 
 ### Генерация тестов
-- **UI тесты** - автоматический анализ веб-страниц и генерация Playwright тестов
-- **API тесты** - генерация на основе OpenAPI спецификаций
-- **Поддержка формата** - Allure TestOps as Code (Python)
+
+#### 1. Генерация ручных тест-кейсов для UI (15+ кейсов)
+- Анализ веб-страницы через Playwright
+- Генерация ручных тест-кейсов в формате Allure TestOps as Code
+- Описание шагов теста в docstring
+- Декоратор @allure.manual
+
+**Пример использования:**
+```bash
+POST /api/v1/generate/test-cases
+{
+  "url": "https://cloud.ru/calculator",
+  "requirements": [
+    "Проверить отображение главной страницы",
+    "Проверить расчет цены при добавлении сервиса"
+  ],
+  "test_type": "manual",
+  "options": {
+    "manual_count": 15
+  }
+}
+```
+
+#### 2. Генерация ручных тест-кейсов для API VMs (15+ кейсов)
+- Парсинг OpenAPI спецификации
+- Генерация ручных тест-кейсов для API endpoints
+- Покрытие CRUD операций
+
+**Пример использования:**
+```bash
+POST /api/v1/generate/api-tests
+{
+  "openapi_url": "https://compute.api.cloud.ru/openapi.yaml",
+  "endpoints": ["/api/v1/vms"],
+  "test_types": ["positive"]
+}
+```
+
+#### 3. Генерация автоматизированных e2e тестов (pytest + Playwright)
+- Автоматический анализ структуры страницы
+- Генерация Playwright тестов с Allure декораторами
+- Паттерн AAA (Arrange-Act-Assert)
+- Использование allure.step() для структурирования
+
+**Пример использования:**
+```bash
+POST /api/v1/generate/test-cases
+{
+  "url": "https://cloud.ru/calculator",
+  "requirements": ["Проверить главную страницу"],
+  "test_type": "automated",
+  "options": {
+    "automated_count": 10
+  }
+}
+```
+
+#### 4. Генерация автоматизированных API тестов (pytest + httpx)
+- Генерация pytest тестов для API endpoints
+- Покрытие positive/negative/edge cases
+- Использование httpx.AsyncClient
+- Allure декораторы и attachments
+
+**Пример использования:**
+```bash
+POST /api/v1/generate/api-tests
+{
+  "openapi_url": "https://compute.api.cloud.ru/openapi.yaml",
+  "endpoints": ["/api/v1/vms"],
+  "test_types": ["positive", "negative"]
+}
+```
+
+### Валидация тест-кейсов
+- **Многоуровневая валидация** - синтаксис, семантика, логика, безопасность
+- **Проверка Allure декораторов** - наличие обязательных декораторов
+- **Safety Guard** - защита от опасного кода (eval, exec, os.system и т.д.)
+- **Детальный отчет** - список ошибок и рекомендаций
 
 ### Валидация и оптимизация
 - **Многоуровневая валидация** - синтаксис, семантика, логика, безопасность
@@ -187,33 +333,109 @@ POST /api/v1/optimize/tests
 }
 ```
 
-Полная документация API доступна по адресу: `http://localhost:8000/docs`
+Полная документация API доступна по адресу: `http://213.171.31.204:8000/docs`
+
+---
+
+## Примеры использования
+
+### Пример 1: Генерация ручных тест-кейсов для UI калькулятора
+
+```bash
+curl -X POST "http://213.171.31.204:8000/api/v1/generate/test-cases" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://cloud.ru/calculator",
+    "requirements": [
+      "Проверить отображение главной страницы с пояснительным текстом",
+      "Проверить кликабельность кнопки \"Добавить сервис\"",
+      "Проверить динамический расчет цены при изменении параметров"
+    ],
+    "test_type": "manual",
+    "options": {
+      "manual_count": 15
+    }
+  }'
+```
+
+### Пример 2: Генерация автоматизированных e2e тестов
+
+```bash
+curl -X POST "http://213.171.31.204:8000/api/v1/generate/test-cases" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://cloud.ru/calculator",
+    "requirements": [
+      "Проверить главную страницу",
+      "Проверить добавление сервиса"
+    ],
+    "test_type": "automated",
+    "options": {
+      "automated_count": 10
+    }
+  }'
+```
+
+### Пример 3: Генерация API тестов для VMs
+
+```bash
+curl -X POST "http://213.171.31.204:8000/api/v1/generate/api-tests" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "openapi_url": "https://compute.api.cloud.ru/openapi.yaml",
+    "endpoints": ["/api/v1/vms"],
+    "test_types": ["positive", "negative"]
+  }'
+```
+
+### Пример 4: Проверка статуса задачи
+
+```bash
+# Получить request_id из ответа предыдущего запроса
+curl "http://213.171.31.204:8000/api/v1/tasks/{request_id}?include_tests=true"
+```
+
+### Пример 5: Валидация теста
+
+```bash
+curl -X POST "http://213.171.31.204:8000/api/v1/validate/tests" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "test_code": "@allure.feature(\"Test\")\ndef test_example(): assert True",
+    "validation_level": "full"
+  }'
+```
 
 ---
 
 ## Конфигурация
 
-Основные настройки в файле `.env`:
+### Переменные окружения
 
+Основные настройки можно задать через переменные окружения или файл `.env`:
+
+**Обязательные:**
+- `CLOUD_RU_API_KEY` - API ключ для Cloud.ru Evolution Foundation Model (можно получить в настройках проекта)
+
+**Опциональные (имеют значения по умолчанию):**
+- `DATABASE_URL` - URL базы данных (по умолчанию: `postgresql://testops:testops_password@postgres:5432/testops_copilot`)
+- `REDIS_URL` - URL Redis (по умолчанию: `redis://redis:6379/0`)
+- `CLOUD_RU_FOUNDATION_MODELS_URL` - URL API Foundation Models (по умолчанию: `https://foundation-models.api.cloud.ru/v1`)
+- `CLOUD_RU_DEFAULT_MODEL` - Модель по умолчанию (по умолчанию: `ai-sage/GigaChat3-10B-A1.8B`)
+
+**Пример .env файла:**
 ```env
-# Database
-DATABASE_URL=postgresql://user:password@localhost:5432/testops_copilot
+# Cloud.ru API (ОБЯЗАТЕЛЬНО)
+CLOUD_RU_API_KEY=your_api_key_here
 
-# Redis
-REDIS_URL=redis://localhost:6379/0
+# Database (опционально, используются значения из docker-compose)
+DATABASE_URL=postgresql://testops:testops_password@postgres:5432/testops_copilot
 
-# Cloud.ru API
-CLOUD_RU_API_KEY=your_api_key
-CLOUD_RU_KEY_ID=your_key_id
-CLOUD_RU_KEY_SECRET=your_key_secret
-
-# Email
-EMAIL_NOTIFICATIONS_ENABLED=false
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_USER=user@example.com
-SMTP_PASSWORD=password
+# Redis (опционально)
+REDIS_URL=redis://redis:6379/0
 ```
+
+**Примечание:** При запуске через `docker-compose` большинство настроек уже настроены в `docker-compose.yml`. Вам нужно только указать `CLOUD_RU_API_KEY`.
 
 ---
 
@@ -306,13 +528,13 @@ celery -A workers.celery_app flower --port=5555
 ### Prometheus метрики
 
 ```bash
-curl http://localhost:8000/metrics
+curl http://213.171.31.204:8000/metrics
 ```
 
 ### Flower (Celery)
 
 ```bash
-open http://localhost:5555
+open http://213.171.31.204:5555
 ```
 
 ### Логи
@@ -407,7 +629,7 @@ docker-compose restart redis celery_worker
 
 - **Документация:** [testops_copilot/docs/](testops_copilot/docs/)
 - **Issues:** Создайте issue в репозитории
-- **API Docs:** http://localhost:8000/docs
+- **API Docs:** http://213.171.31.204:8000/docs
 
 ---
 

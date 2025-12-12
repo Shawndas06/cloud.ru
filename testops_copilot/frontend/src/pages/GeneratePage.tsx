@@ -40,9 +40,13 @@ export default function GeneratePage() {
         requirements,
       });
 
-      navigate(`/tasks?taskId=${response.request_id}`);
+      // Переходим на страницу задач БЕЗ автоматического выбора задачи
+      navigate('/tasks');
     } catch (err: any) {
-      setError(err.response?.data?.detail || err.message || 'Ошибка генерации тестов');
+      const errorMsg = err.code === 'ERR_NETWORK' || err.message?.includes('Network Error')
+        ? 'Не удалось подключиться к серверу. Проверьте, что API Gateway запущен.'
+        : err.response?.data?.detail || err.message || 'Ошибка генерации UI тестов';
+      setError(errorMsg);
     } finally {
       setLoading(false);
     }
@@ -70,7 +74,8 @@ export default function GeneratePage() {
       };
 
       const response = await apiClient.generate.apiTests(requestData);
-      navigate(`/tasks?taskId=${response.request_id}`);
+      // Переходим на страницу задач БЕЗ автоматического выбора задачи
+      navigate('/tasks');
     } catch (err: any) {
       const errorMsg = err.code === 'ERR_NETWORK' || err.message?.includes('Network Error')
         ? 'Не удалось подключиться к серверу. Проверьте, что API Gateway запущен.'

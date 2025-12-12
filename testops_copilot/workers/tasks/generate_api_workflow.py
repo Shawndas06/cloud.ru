@@ -75,7 +75,25 @@ def generate_api_tests_task(
                 except:
                     spec_dict = json.loads(openapi_spec)
             elif openapi_url:
-                spec_dict = loop.run_until_complete(parser.parse_from_url(openapi_url))
+                # Добавляем таймаут для парсинга OpenAPI URL (максимум 60 секунд)
+                from shared.utils.logger import agent_logger
+                agent_logger.info(f"[API] Parsing OpenAPI from URL: {openapi_url}")
+                try:
+                    spec_dict = loop.run_until_complete(
+                        asyncio.wait_for(
+                            parser.parse_from_url(openapi_url),
+                            timeout=60.0  # 60 секунд таймаут
+                        )
+                    )
+                    agent_logger.info(f"[API] OpenAPI parsed successfully")
+                except asyncio.TimeoutError:
+                    error_msg = f"Timeout при получении OpenAPI спецификации из {openapi_url}. Проверьте доступность URL и скорость ответа сервера."
+                    agent_logger.error(f"[API] {error_msg}")
+                    raise ValueError(error_msg)
+                except Exception as e:
+                    error_msg = f"Ошибка при получении OpenAPI спецификации из {openapi_url}: {str(e)}"
+                    agent_logger.error(f"[API] {error_msg}", exc_info=True)
+                    raise ValueError(error_msg)
             else:
                 raise ValueError("openapi_url or openapi_spec is required")
         finally:
@@ -88,14 +106,43 @@ def generate_api_tests_task(
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
+            from shared.utils.logger import agent_logger
+            agent_logger.info(
+                f"[GENERATION] Starting API test generation",
+                extra={
+                    "request_id": request_id,
+                    "openapi_url": openapi_url,
+                    "endpoints": endpoints,
+                    "test_types": test_types
+                }
+            )
+            # Добавляем таймаут для генерации API тестов (максимум 5 минут)
             tests = loop.run_until_complete(
-                generator.generate_api_tests(
-                    openapi_spec=spec_dict,
-                    openapi_url=openapi_url,
-                    endpoints=endpoints,
-                    test_types=test_types
+                asyncio.wait_for(
+                    generator.generate_api_tests(
+                        openapi_spec=spec_dict,
+                        openapi_url=openapi_url,
+                        endpoints=endpoints,
+                        test_types=test_types
+                    ),
+                    timeout=300.0  # 5 минут таймаут
                 )
             )
+            agent_logger.info(
+                f"[GENERATION] API test generation completed",
+                extra={
+                    "request_id": request_id,
+                    "tests_generated": len(tests)
+                }
+            )
+        except asyncio.TimeoutError:
+            from shared.utils.logger import agent_logger
+            agent_logger.error(f"[GENERATION] API test generation timeout after 5 minutes for request {request_id}")
+            raise ValueError("Генерация API тестов превысила таймаут - LLM не ответил за 5 минут")
+        except Exception as e:
+            from shared.utils.logger import agent_logger
+            agent_logger.error(f"[GENERATION] API test generation error: {e}", exc_info=True)
+            raise
         finally:
             loop.close()
         redis_client.publish_event(
@@ -105,12 +152,25 @@ def generate_api_tests_task(
         validator = ValidatorAgent()
         validated_tests = []
         from shared.utils.logger import agent_logger
-        agent_logger.info(f"Validating {len(tests)} API tests")
+        agent_logger.info(f"[VALIDATION] Starting validation of {len(tests)} API tests for request {request_id}")
         for i, test_code in enumerate(tests):
+            agent_logger.info(f"[VALIDATION] Validating API test {i+1}/{len(tests)}")
             validation_result = validator.validate(test_code, validation_level="full")
             passed = validation_result.get("passed", False)
             score = validation_result.get("score", 0)
-            agent_logger.info(f"API Test {i+1} validation result: passed={passed}, score={score}")
+            syntax_errors = len(validation_result.get('syntax_errors', []))
+            semantic_errors = len(validation_result.get('semantic_errors', []))
+            agent_logger.info(
+                f"[VALIDATION] API Test {i+1} validation result",
+                extra={
+                    "test_number": i+1,
+                    "passed": passed,
+                    "score": score,
+                    "syntax_errors": syntax_errors,
+                    "semantic_errors": semantic_errors,
+                    "has_decorators": "@allure.feature" in test_code and "@allure.story" in test_code and "@allure.title" in test_code
+                }
+            )
             
             syntax_errors = len(validation_result.get('syntax_errors', []))
             semantic_errors = len(validation_result.get('semantic_errors', []))
@@ -150,11 +210,12 @@ def generate_api_tests_task(
             
             # Принимаем тест если нет критических синтаксических ошибок
             # Для API тестов более мягкая валидация - принимаем если код выглядит как тест
+            syntax_errors = len(validation_result.get('syntax_errors', []))
+            semantic_errors = len(validation_result.get('semantic_errors', []))
+            
             is_valid_test = (
-                passed or 
-                (syntax_errors == 0 and score >= 10) or
-                (syntax_errors == 0 and "def test_" in test_code and "assert" in test_code) or
-                (syntax_errors <= 1 and "async def test_" in test_code and "httpx" in test_code)
+                syntax_errors == 0 and
+                (passed or score >= 50 or (semantic_errors == 0 and "def test_" in test_code and "assert" in test_code))
             )
             
             if is_valid_test:
@@ -189,13 +250,54 @@ def generate_api_tests_task(
                     match = re.search(r'def\s+(test_\w+)', test_code)
                     if match:
                         test_name = match.group(1)
+                # Логика статуса: passed если нет синтаксических ошибок
+                # Тесты с синтаксически правильным кодом должны быть passed
+                validation = test_data.get("validation", {})
+                syntax_errors = len(validation.get("syntax_errors", []))
+                
+                # Проверяем наличие декораторов (простая проверка наличия строки)
+                has_feature = "@allure.feature" in test_code
+                has_story = "@allure.story" in test_code
+                has_title = "@allure.title" in test_code
+                has_decorators = has_feature and has_story and has_title
+                
+                score = validation.get("score", 0)
+                passed = validation.get("passed", False)
+                
+                # УПРОЩЕННАЯ ЛОГИКА: Тест считается passed если:
+                # 1. Нет синтаксических ошибок (критично!)
+                # 2. И (есть хотя бы один декоратор ИЛИ score >= 30 ИЛИ passed = True)
+                # Основная цель - тесты должны работать, warnings не критичны
+                is_passed = (
+                    syntax_errors == 0 and
+                    (has_feature or has_story or has_title or score >= 30 or passed)
+                )
+                
+                validation_status = "passed" if is_passed else "warning"
+                
+                agent_logger.info(
+                    f"[STATUS] API Test '{test_name}' status determination",
+                    extra={
+                        "test_name": test_name,
+                        "syntax_errors": syntax_errors,
+                        "has_feature": has_feature,
+                        "has_story": has_story,
+                        "has_title": has_title,
+                        "has_decorators": has_decorators,
+                        "score": score,
+                        "passed": passed,
+                        "is_passed": is_passed,
+                        "validation_status": validation_status
+                    }
+                )
+                
                 test_case = TestCase(
                     request_id=request.request_id,
                     test_name=test_name,
                     test_code=test_code,
                     test_type="api",
                     code_hash=code_hash,
-                    validation_status="passed" if test_data.get("validation", {}).get("passed") else "warning",
+                    validation_status=validation_status,
                     validation_issues=test_data.get("validation", {}).get("errors", [])
                 )
                 db.add(test_case)

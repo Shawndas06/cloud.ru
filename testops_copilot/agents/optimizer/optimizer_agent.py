@@ -56,10 +56,35 @@ class OptimizerAgent:
             agent_logger.info(f"Generating embeddings for {len(tests)} tests")
             embeddings = []
             test_texts = []
-            for test in tests:
+            # Добавляем таймаут для каждого эмбеддинга (10 секунд)
+            import asyncio
+            for i, test in enumerate(tests):
                 test_text = f"{test.get('test_name', '')} {test.get('test_code', '')}"
                 test_texts.append(test_text)
-                embedding = await llm_client.generate_embeddings(test_text)
+                try:
+                    # Генерируем эмбеддинг с таймаутом
+                    embedding = await asyncio.wait_for(
+                        llm_client.generate_embeddings(test_text),
+                        timeout=10.0
+                    )
+                    embeddings.append(embedding)
+                    if (i + 1) % 5 == 0:
+                        agent_logger.info(f"Generated embeddings for {i + 1}/{len(tests)} tests")
+                except asyncio.TimeoutError:
+                    agent_logger.warning(f"Embedding generation timeout for test {i + 1}, using hash-based fallback")
+                    # Используем хеш-основанный эмбеддинг как fallback
+                    import hashlib
+                    import numpy as np
+                    hash_val = int(hashlib.sha256(test_text.encode()).hexdigest()[:8], 16)
+                    # Создаем простой вектор на основе хеша
+                    embedding = [float((hash_val >> j) & 1) for j in range(768)]
+                    embeddings.append(embedding)
+                except Exception as e:
+                    agent_logger.error(f"Error generating embedding for test {i + 1}: {e}")
+                    # Используем хеш-основанный эмбеддинг как fallback
+                    import hashlib
+                    hash_val = int(hashlib.sha256(test_text.encode()).hexdigest()[:8], 16)
+                    embedding = [float((hash_val >> j) & 1) for j in range(768)]
                 embeddings.append(embedding)
                 if use_redisearch:
                     redis_client.save_vector(

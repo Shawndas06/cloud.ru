@@ -23,21 +23,28 @@ export default function TasksPage() {
     return () => clearInterval(interval);
   }, [filter]);
 
-  useEffect(() => {
-    if (taskIdParam) {
-      loadTask(taskIdParam);
-    }
-  }, [taskIdParam]);
+  // УБРАНО АВТОМАТИЧЕСКОЕ ПЕРЕКЛЮЧЕНИЕ - задача загружается только при явном клике пользователя
+  // useEffect(() => {
+  //   if (taskIdParam && (!selectedTask || selectedTask.request_id !== taskIdParam)) {
+  //     loadTask(taskIdParam);
+  //   }
+  // }, [taskIdParam]);
 
   useEffect(() => {
+    // ОБНОВЛЯЕМ ТОЛЬКО выбранную задачу при SSE событиях, НИКОГДА не переключаемся
     if (event && selectedTask) {
-      if (event.type === 'progress') {
-        loadTask(selectedTask.request_id);
-      } else if (event.type === 'completed') {
-        loadTask(selectedTask.request_id);
+      if (event.type === 'progress' || event.type === 'completed') {
+        // СТРОГАЯ ПРОВЕРКА: обновляем ТОЛЬКО если это событие для ВЫБРАННОЙ задачи
+        const eventRequestId = event.data?.request_id || event.data?.status?.request_id || event.data?.request_id;
+        // ОБЯЗАТЕЛЬНО проверяем, что request_id совпадает, иначе ИГНОРИРУЕМ
+        if (eventRequestId && eventRequestId === selectedTask.request_id) {
+          // Обновляем данные выбранной задачи, НЕ переключаемся
+          loadTask(selectedTask.request_id);
+        }
+        // ВСЕ остальные события ИГНОРИРУЕМ - НЕ переключаемся автоматически
       }
     }
-  }, [event]);
+  }, [event, selectedTask]);
 
   const loadTasks = async () => {
     try {
@@ -45,25 +52,24 @@ export default function TasksPage() {
       const data = await apiClient.tasks.list(50, 0, filter || undefined);
       setTasks(data);
       
-      // Сохраняем тесты выбранной задачи при обновлении списка
+      // КРИТИЧЕСКИ ВАЖНО: ОБНОВЛЯЕМ ТОЛЬКО выбранную задачу, НИКОГДА не переключаемся
+      // НИ ПРИ КАКИХ УСЛОВИЯХ не выбираем задачу автоматически
       if (selectedTask) {
         const updatedTask = data.find((t) => t.request_id === selectedTask.request_id);
         if (updatedTask) {
-          // Сохраняем тесты из текущего selectedTask, если они есть
+          // Обновляем только статус и прогресс, сохраняем тесты и метрики
+          // НЕ меняем selectedTask на другую задачу
           setSelectedTask({
             ...updatedTask,
             tests: selectedTask.tests || updatedTask.tests,
             metrics: selectedTask.metrics || updatedTask.metrics
           });
         }
+        // Если выбранной задачи нет в списке - НЕ переключаемся, оставляем как есть
       }
-      
-      if (taskIdParam && !selectedTask) {
-        const task = data.find((t) => t.request_id === taskIdParam);
-        if (task) {
-          setSelectedTask(task);
-        }
-      }
+      // КРИТИЧЕСКИ ВАЖНО: НИКОГДА не выбираем первую задачу автоматически
+      // НИКОГДА не выбираем задачу с taskIdParam автоматически
+      // НИКОГДА не выбираем задачу по статусу автоматически
     } catch (error: any) {
       console.error('Error loading tasks:', error);
       // Показываем пользователю понятное сообщение об ошибке
@@ -173,7 +179,7 @@ export default function TasksPage() {
                 className={`task-card ${selectedTask?.request_id === task.request_id ? 'active' : ''}`}
                 onClick={() => {
                   setSelectedTask(task);
-                  navigate(`/tasks?taskId=${task.request_id}`);
+                  // Убрали navigate - не переключаем URL при клике на задачу
                 }}
               >
                 <div className="task-card-header">
@@ -284,14 +290,21 @@ export default function TasksPage() {
                 <h4>Тесты ({selectedTask.tests.length})</h4>
                 <div className="tests-list">
                   {selectedTask.tests.map((test) => (
-                    <div key={test.test_id} className="test-item">
+                    <div 
+                      key={test.test_id} 
+                      className="test-item"
+                      onClick={(e) => {
+                        // Предотвращаем всплытие события, чтобы не срабатывал onClick на родительских элементах
+                        e.stopPropagation();
+                      }}
+                    >
                       <div className="test-name">{test.test_name}</div>
                       <div className="test-meta">
                         <span className="test-type">{test.test_type}</span>
                         {test.priority && <span className="test-priority">Приоритет: {test.priority}</span>}
                       </div>
                       {test.test_code && (
-                        <details className="test-code">
+                        <details className="test-code" onClick={(e) => e.stopPropagation()}>
                           <summary>Код теста</summary>
                           <pre>{test.test_code}</pre>
                         </details>

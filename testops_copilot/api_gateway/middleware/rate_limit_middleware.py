@@ -22,7 +22,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         user_id = getattr(request.state, "user_id", None)
         if user_id:
             return f"user:{user_id}"
-        client_ip = request.client.host if request.client else "unknown"
+        # Получаем реальный IP из заголовков прокси (Nginx)
+        client_ip = request.headers.get("X-Real-IP")
+        if not client_ip:
+            client_ip = request.headers.get("X-Forwarded-For")
+            if client_ip:
+                # X-Forwarded-For может содержать несколько IP через запятую
+                client_ip = client_ip.split(",")[0].strip()
+        if not client_ip:
+            client_ip = request.client.host if request.client else "unknown"
         return f"ip:{client_ip}"
     def _get_rate_limit_key(self, identifier: str, path: str) -> str:
         normalized_path = path.split("?")[0]
@@ -71,8 +79,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             api_logger.warning(f"Redis error in rate limit check: {e}")
             return True, {"limit": self.requests_per_minute, "remaining": 100, "reset": int(time.time()) + 60, "retry_after": None}
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in ["/health", "/ready", "/metrics", "/docs", "/openapi.json", "/"]:
-            return await call_next(request)
+        # Отключаем rate limiting для критических endpoints
+        if request.url.path in ["/health", "/ready", "/metrics", "/docs", "/openapi.json", "/", 
+                                "/api/v1/tasks", "/api/v1/generate/test-cases", "/api/v1/generate/api-tests",
+                                "/api/v1/stream"] or request.url.path.startswith("/api/v1/tasks/") or request.url.path.startswith("/api/v1/stream/"):
+            response = await call_next(request)
+            response.headers["X-RateLimit-Limit"] = str(self.requests_per_minute)
+            response.headers["X-RateLimit-Remaining"] = "999"
+            response.headers["X-RateLimit-Reset"] = str(int(time.time()) + 60)
+            return response
         client_ip = request.client.host if request.client else "unknown"
         if client_ip in ["127.0.0.1", "localhost", "::1"] or "localhost" in str(request.url):
             response = await call_next(request)

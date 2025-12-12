@@ -60,7 +60,8 @@ class LangGraphWorkflow:
         workflow.add_node("reconnaissance", reconnaissance_node)
         workflow.add_node("generation", generation_node)
         workflow.add_node("validation", validation_node)
-        workflow.add_node("optimization", optimization_node)
+        # ОПТИМИЗАЦИЯ УБРАНА - вызывает проблемы с зависанием
+        # workflow.add_node("optimization", optimization_node)
         workflow.add_node("save_results", save_results_node)
         workflow.set_entry_point("reconnaissance")
         workflow.add_edge("reconnaissance", "generation")
@@ -70,10 +71,10 @@ class LangGraphWorkflow:
             should_retry_generation,
             {
                 "retry": "generation",
-                "continue": "optimization"
+                "continue": "save_results"  # Пропускаем оптимизацию, сразу сохраняем
             }
         )
-        workflow.add_edge("optimization", "save_results")
+        # workflow.add_edge("optimization", "save_results")  # Убрано
         workflow.add_edge("save_results", END)
         return workflow
     def run_workflow(
@@ -117,19 +118,56 @@ class LangGraphWorkflow:
                 final_state = None
                 last_node = None
                 nodes_visited = []
-                for event in self.app.stream(initial_state, config):
-                    # Обрабатываем каждое событие для отслеживания прогресса
-                    for node_name, node_output in event.items():
-                        last_node = node_name
-                        nodes_visited.append(node_name)
-                        if node_output and isinstance(node_output, dict):
-                            current_step = node_output.get("current_step", "")
-                            if current_step:
-                                agent_logger.info(
-                                    f"Workflow progress for {request_id}: {node_name} -> {current_step}",
-                                    extra={"request_id": request_id, "node": node_name, "step": current_step}
-                                )
-                            final_state = node_output
+                
+                # УПРОЩЕННАЯ ВЕРСИЯ: используем stream напрямую с таймаутом через invoke
+                # Stream может зависать, поэтому используем invoke с таймаутом
+                agent_logger.info(f"Starting workflow stream for {request_id}")
+                
+                # Пытаемся использовать stream, но с ограничением по времени
+                import signal
+                import threading
+                
+                stream_completed = threading.Event()
+                stream_error = [None]
+                final_state_from_stream = [None]
+                
+                def run_stream():
+                    try:
+                        for event in self.app.stream(initial_state, config):
+                            for node_name, node_output in event.items():
+                                last_node = node_name
+                                nodes_visited.append(node_name)
+                                if node_output and isinstance(node_output, dict):
+                                    current_step = node_output.get("current_step", "")
+                                    if current_step:
+                                        agent_logger.info(
+                                            f"Workflow progress for {request_id}: {node_name} -> {current_step}",
+                                            extra={"request_id": request_id, "node": node_name, "step": current_step}
+                                        )
+                                    final_state_from_stream[0] = node_output
+                                    # Публикуем прогресс в Redis
+                                    redis_client.publish_event(
+                                        f"request:{request_id}",
+                                        {"status": "processing", "step": current_step, "node": node_name}
+                                    )
+                        stream_completed.set()
+                    except Exception as e:
+                        stream_error[0] = e
+                        stream_completed.set()
+                
+                # Запускаем stream в отдельном потоке
+                stream_thread = threading.Thread(target=run_stream, daemon=True)
+                stream_thread.start()
+                
+                # Ждем завершения с таймаутом 10 минут
+                if stream_completed.wait(timeout=600):
+                    if stream_error[0]:
+                        raise stream_error[0]
+                    final_state = final_state_from_stream[0]
+                else:
+                    # Таймаут - используем invoke как fallback
+                    agent_logger.warning(f"Stream timeout for {request_id}, using invoke")
+                    final_state = self.app.invoke(initial_state, config)
                 
                 agent_logger.info(f"Stream completed for {request_id}, nodes_visited={nodes_visited}, last_node={last_node}, final_step={final_state.get('current_step') if final_state else 'None'}")
                 

@@ -21,25 +21,60 @@ class GeneratorAgent:
         automated_count = options.get("automated_count", 10)
         user_prompt = self._build_ui_prompt(url, page_structure, requirements, test_type, options)
         try:
+            # Увеличиваем max_tokens для генерации большего количества тестов
+            # Для 15+ тестов нужно больше токенов
+            max_tokens = 8192 if test_type in ["manual", "both"] else 4096
             response = await llm_client.generate(
                 prompt=user_prompt,
                 system_prompt=self.ui_system_prompt,
                 model=None,
                 temperature=0.3,
-                max_tokens=4096
+                max_tokens=max_tokens
             )
             if not response or "choices" not in response or len(response["choices"]) == 0:
                 print("LLM response is empty or invalid")
                 return []
             generated_code = response["choices"][0]["message"]["content"]
             from shared.utils.logger import agent_logger
-            agent_logger.info(f"LLM generated code length: {len(generated_code)}")
+            agent_logger.info(
+                f"[GENERATION] LLM generated code",
+                extra={
+                    "code_length": len(generated_code),
+                    "test_type": test_type,
+                    "url": url
+                }
+            )
             if len(generated_code) > 0:
-                agent_logger.debug(f"LLM generated code (first 500 chars): {generated_code[:500]}")
+                agent_logger.debug(f"[GENERATION] Generated code preview (first 500 chars): {generated_code[:500]}")
             tests = self._extract_tests_from_code(generated_code)
-            agent_logger.info(f"Extracted {len(tests)} tests from generated code")
+            agent_logger.info(
+                f"[GENERATION] Extracted {len(tests)} tests from generated code",
+                extra={
+                    "tests_count": len(tests),
+                    "test_type": test_type,
+                    "expected_manual": options.get("manual_count", 15) if test_type in ["manual", "both"] else 0,
+                    "expected_automated": options.get("automated_count", 10) if test_type in ["automated", "both"] else 0
+                }
+            )
             if len(tests) == 0:
-                agent_logger.warning(f"No tests extracted. Generated code preview: {generated_code[:1000]}")
+                agent_logger.warning(
+                    f"[GENERATION] No tests extracted! Generated code preview: {generated_code[:1000]}",
+                    extra={"code_preview": generated_code[:1000]}
+                )
+            else:
+                # Логируем информацию о каждом тесте
+                for i, test in enumerate(tests):
+                    has_decorators = "@allure.feature" in test and "@allure.story" in test and "@allure.title" in test
+                    is_manual = "@allure.manual" in test
+                    agent_logger.debug(
+                        f"[GENERATION] Test {i+1} info",
+                        extra={
+                            "test_number": i+1,
+                            "has_decorators": has_decorators,
+                            "is_manual": is_manual,
+                            "code_length": len(test)
+                        }
+                    )
             return tests
         except Exception as e:
             print(f"Error generating UI tests: {e}")
@@ -70,12 +105,14 @@ class GeneratorAgent:
             raise ValueError("openapi_spec or openapi_url is required")
         user_prompt = self._build_api_prompt(openapi_spec, endpoints, test_types)
         try:
+            # Увеличиваем max_tokens для генерации большего количества тестов
+            max_tokens = 8192
             response = await llm_client.generate(
                 prompt=user_prompt,
                 system_prompt=self.api_system_prompt,
                 model=None,
                 temperature=0.3,
-                max_tokens=4096
+                max_tokens=max_tokens
             )
             if not response or "choices" not in response or len(response["choices"]) == 0:
                 print("LLM response is empty or invalid")
@@ -166,14 +203,62 @@ class GeneratorAgent:
         automated_count = options.get("automated_count", 10)
         manual_count = options.get("manual_count", 15)
         
-        prompt = f"""Сгенерируй тест-кейсы для веб-страницы: {url}
+        test_type_instruction = ""
+        if test_type == "both":
+            test_type_instruction = f"""
+КРИТИЧЕСКИ ВАЖНО: Сгенерируй ОБА типа тестов, КАЖДЫЙ ОТДЕЛЬНОЙ ФУНКЦИЕЙ:
+1. Сначала ТОЧНО {manual_count} РУЧНЫХ тестов (каждый с @allure.manual декоратором, без Playwright кода, только описание шагов)
+2. Затем ТОЧНО {automated_count} АВТОМАТИЗИРОВАННЫХ тестов (каждый с Playwright кодом)
+
+ИТОГО ДОЛЖНО БЫТЬ {manual_count + automated_count} ОТДЕЛЬНЫХ ФУНКЦИЙ def test_...
+
+Ручные тесты должны быть в формате (каждый отдельной функцией):
+@allure.manual
+@allure.feature("UI Tests")
+@allure.story("Manual Test Cases")
+@allure.title("Название теста")
+@allure.tag("NORMAL")
+def test_manual_1():
+    \"\"\"Описание шагов теста\"\"\"
+    pass
+
+Автоматизированные тесты должны быть в формате (каждый отдельной функцией):
+@allure.feature("UI Tests")
+@allure.story("Automated Test Cases")
+@allure.title("Название теста")
+@allure.tag("NORMAL")
+def test_automated_1(page: Page):
+    with allure.step("Шаг 1"):
+        page.goto("/")
+    with allure.step("Проверка"):
+        expect(page.locator("body")).to_be_visible()
+"""
+        elif test_type == "manual":
+            test_type_instruction = f"""
+КРИТИЧЕСКИ ВАЖНО: Сгенерируй ТОЧНО {manual_count} РУЧНЫХ тестов, КАЖДЫЙ ОТДЕЛЬНОЙ ФУНКЦИЕЙ def test_manual_...
+Каждый тест должен иметь полный набор декораторов ПЕРЕД функцией.
+"""
+        elif test_type == "automated":
+            test_type_instruction = f"""
+КРИТИЧЕСКИ ВАЖНО: Сгенерируй ТОЧНО {automated_count} АВТОМАТИЗИРОВАННЫХ тестов, КАЖДЫЙ ОТДЕЛЬНОЙ ФУНКЦИЕЙ def test_automated_...
+Каждый тест должен иметь полный набор декораторов ПЕРЕД функцией.
+"""
+        
+        prompt = f"""Сгенерируй UI ТЕСТЫ (НЕ тест-планы!) для веб-страницы: {url}
+
+КРИТИЧЕСКИ ВАЖНО: Генерируй ИМЕННО готовые тесты (функции def test_...), а НЕ тест-планы или описания!
 
 Требования:
 {chr(10).join(f"- {req}" for req in requirements)}
 
 Тип тестов: {test_type}
-Количество автоматизированных тестов: {automated_count}
-Количество мануальных тестов: {manual_count}
+{test_type_instruction}
+
+КРИТИЧЕСКИ ВАЖНО: 
+- Сгенерируй ТОЧНО указанное количество тестов ({manual_count} ручных и/или {automated_count} автоматизированных)
+- Каждый тест должен быть отдельной функцией def test_...
+- Не объединяй тесты в одну функцию
+- Каждый тест должен иметь полный набор декораторов ПЕРЕД функцией
 
 Структура страницы:
 - Кнопки: {len(buttons)} найдено
@@ -182,18 +267,25 @@ class GeneratorAgent:
 
 Важно:
 1. Все тесты должны использовать паттерн AAA (Arrange-Act-Assert)
-2. Все автоматизированные тесты должны иметь Allure декораторы
+2. Все тесты должны иметь полный набор Allure декораторов ПЕРЕД функцией:
+   - @allure.feature("...")
+   - @allure.story("...")
+   - @allure.title("...")
+   - @allure.tag("...")
 3. Код должен быть валидным Python кодом без синтаксических ошибок
-4. Используй только Playwright API и allure.step() для структурирования
-5. КРИТИЧЕСКИ ВАЖНО: НЕ ПОВТОРЯЙ одинаковые действия много раз подряд
-6. Если нужно выполнить несколько действий, используй циклы или переменные
-7. Каждое действие должно быть осмысленным и проверять результат
-8. Избегай множественных одинаковых кликов без проверки состояния
+4. Автоматизированные тесты используют Playwright API и allure.step() для структурирования
+5. Ручные тесты используют @allure.manual и описание шагов в docstring
+6. КРИТИЧЕСКИ ВАЖНО: НЕ ПОВТОРЯЙ одинаковые действия много раз подряд
+7. Если нужно выполнить несколько действий, используй циклы или переменные
+8. Каждое действие должно быть осмысленным и проверять результат
+9. Избегай множественных одинаковых кликов без проверки состояния
 
 ЗАПРЕЩЕНО:
 - Генерировать код с повторяющимися одинаковыми действиями без логики
 - Множественные одинаковые клики подряд без проверки результата
 - Пустые циклы или бессмысленные повторения
+- Для ручных тестов использовать Playwright код
+- Объединять несколько тестов в одну функцию
 """
         return prompt
     def _build_api_prompt(
@@ -225,13 +317,18 @@ Endpoints для тестирования:
 
 Типы тестов: {', '.join(test_types)}
 
+ВАЖНО: 
+- Для каждого endpoint сгенерируй минимум 3-5 тестов разных типов
+- Покрой все типы тестов: positive, negative (validation, auth, forbidden, not_found)
+- Если endpoints не указаны, сгенерируй тесты для всех доступных endpoints (минимум 15 тестов)
+
 Важно:
 1. Все тесты должны использовать паттерн AAA (Arrange-Act-Assert)
-2. Все тесты должны иметь Allure декораторы
-3. Покрыть все типы тестов: positive, negative (validation, auth, forbidden, not_found)
-4. Использовать httpx.AsyncClient для асинхронных запросов
-5. Код должен быть валидным Python кодом без синтаксических ошибок
-6. Проверять статус коды и структуру ответов
+2. Все тесты должны иметь полный набор Allure декораторов (@allure.feature, @allure.story, @allure.title, @allure.tag)
+3. Использовать httpx.AsyncClient для асинхронных запросов
+4. Код должен быть валидным Python кодом без синтаксических ошибок
+5. Проверять статус коды и структуру ответов
+6. Использовать @pytest.mark.asyncio для async функций
 """
         return prompt
     def _extract_tests_from_code(self, code: str) -> List[str]:
@@ -320,42 +417,113 @@ Endpoints для тестирования:
                 function_match = re.search(r'def\s+(test_\w+)', test_code)
                 if function_match:
                     func_name = function_match.group(1)
-                    # Проверяем есть ли декораторы перед функцией
-                    func_start = function_match.start()
-                    code_before_func = test_code[:func_start].strip()
                     
-                    if "@allure" not in code_before_func:
-                        # Если декораторов нет, добавляем базовые
+                    # Проверяем наличие всех обязательных декораторов
+                    has_feature = re.search(r'@allure\.feature\s*\(', test_code)
+                    has_story = re.search(r'@allure\.story\s*\(', test_code)
+                    has_title = re.search(r'@allure\.title\s*\(', test_code)
+                    has_tag = re.search(r'@allure\.tag\s*\(', test_code)
+                    
+                    # Логируем если декораторы отсутствуют
+                    if not (has_feature and has_story and has_title and has_tag):
+                        from shared.utils.logger import agent_logger
+                        missing = []
+                        if not has_feature:
+                            missing.append("feature")
+                        if not has_story:
+                            missing.append("story")
+                        if not has_title:
+                            missing.append("title")
+                        if not has_tag:
+                            missing.append("tag")
+                        agent_logger.info(
+                            f"[GENERATION] Adding missing decorators to test {i+1}",
+                            extra={"missing_decorators": missing, "test_number": i+1}
+                        )
+                    
+                    # Если хотя бы одного декоратора нет, добавляем все
+                    if not (has_feature and has_story and has_title and has_tag):
                         test_title = func_name.replace('test_', '').replace('_', ' ').title()
-                        decorators = f'''@allure.feature("Test Feature")
-@allure.story("Test Story")
+                        # Определяем feature и story из названия теста
+                        feature_name = "API Tests" if is_api_test else "UI Tests"
+                        story_name = "Test Cases"
+                        if "api" in func_name.lower() or "http" in func_name.lower():
+                            feature_name = "API Tests"
+                        elif "ui" in func_name.lower() or "page" in func_name.lower():
+                            feature_name = "UI Tests"
+                        
+                        decorators = f'''@allure.feature("{feature_name}")
+@allure.story("{story_name}")
 @allure.title("{test_title}")
 @allure.tag("NORMAL")
 @allure.severity(allure.severity_level.NORMAL)
 '''
+                        # Для API тестов добавляем @pytest.mark.asyncio если нужно
+                        if is_api_test and "@pytest.mark.asyncio" not in test_code and "async def" in test_code:
+                            decorators = "@pytest.mark.asyncio\n" + decorators
+                        
+                        # Вставляем декораторы перед функцией
                         test_code = test_code.replace(function_match.group(0), decorators + function_match.group(0))
                 
                 # Для API тестов не добавляем allure.step с expect, так как это для UI
                 # Проверяем наличие AAA структуры (хотя бы одну проверку)
-                if "assert" not in test_code and "expect" not in test_code:
+                is_manual = "@allure.manual" in test_code or "allure.manual" in test_code
+                if not is_manual and "assert" not in test_code and "expect" not in test_code:
                     # Добавляем минимальную проверку если её нет
-                    if "def test_" in test_code:
+                    if "def test_" in test_code or "async def test_" in test_code:
                         lines = test_code.split('\n')
                         indent = "    "
+                        inserted = False
                         for j, line in enumerate(lines):
-                            if line.strip().startswith('def test_'):
-                                # Ищем конец функции (пустая строка или следующий def)
+                            if line.strip().startswith('def test_') or line.strip().startswith('async def test_'):
+                                # Ищем тело функции (первая строка с отступом)
                                 for k in range(j + 1, len(lines)):
-                                    if lines[k].strip() and not lines[k].startswith(' ') and not lines[k].startswith('\t') and not lines[k].strip().startswith('#'):
+                                    line_k = lines[k]
+                                    if not line_k.strip() or line_k.strip().startswith('#'):
+                                        continue
+                                    # Если это строка с отступом (тело функции)
+                                    if line_k.startswith(' ') or line_k.startswith('\t'):
+                                        # Вставляем проверку в начало тела функции
+                                        if is_api_test:
+                                            # Для API тестов добавляем assert
+                                            # Ищем место после response или в конце функции
+                                            found_response = False
+                                            for m in range(k, len(lines)):
+                                                if "response" in lines[m].lower() and ("=" in lines[m] or "await" in lines[m]):
+                                                    # Вставляем assert после response
+                                                    response_indent = len(lines[m]) - len(lines[m].lstrip())
+                                                    lines.insert(m + 1, ' ' * response_indent + 'assert response.status_code == 200  # TODO: Добавить проверку')
+                                                    found_response = True
+                                                    inserted = True
+                                                    break
+                                            if not found_response:
+                                                # Вставляем в начало тела функции
+                                                func_indent = len(line_k) - len(line_k.lstrip())
+                                                lines.insert(k, ' ' * func_indent + 'assert True  # TODO: Добавить проверку')
+                                                inserted = True
+                                        else:
+                                            # Для UI тестов добавляем expect
+                                            func_indent = len(line_k) - len(line_k.lstrip())
+                                            lines.insert(k, ' ' * func_indent + 'with allure.step("Проверка результата"):')
+                                            lines.insert(k + 1, ' ' * (func_indent + 4) + 'expect(page.locator("body")).to_be_visible()  # TODO: Добавить проверку')
+                                            inserted = True
+                                        break
+                                    # Если это начало следующей функции/блока без отступа
+                                    elif not line_k.startswith(' ') and not line_k.startswith('\t'):
                                         # Вставляем проверку перед следующим блоком
                                         if is_api_test:
-                                            lines.insert(k, f'{indent}assert True  # TODO: Добавить проверку')
+                                            prev_indent = len(lines[k-1]) - len(lines[k-1].lstrip()) if k > 0 else 4
+                                            lines.insert(k, ' ' * prev_indent + 'assert True  # TODO: Добавить проверку')
                                         else:
-                                            lines.insert(k, f'{indent}with allure.step("Проверка результата"):')
-                                            lines.insert(k + 1, f'{indent * 2}# TODO: Добавить проверку')
+                                            prev_indent = len(lines[k-1]) - len(lines[k-1].lstrip()) if k > 0 else 4
+                                            lines.insert(k, ' ' * prev_indent + 'with allure.step("Проверка результата"):')
+                                            lines.insert(k + 1, ' ' * (prev_indent + 4) + 'expect(page.locator("body")).to_be_visible()  # TODO: Добавить проверку')
+                                        inserted = True
                                         break
-                                break
-                        test_code = '\n'.join(lines)
+                                if inserted:
+                                    break
+                        if inserted:
+                            test_code = '\n'.join(lines)
                 
                 tests.append(test_code)
         else:

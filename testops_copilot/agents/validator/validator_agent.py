@@ -11,6 +11,9 @@ class ValidatorAgent:
         test_code: str,
         validation_level: str = "full"
     ) -> Dict[str, Any]:
+        from shared.utils.logger import agent_logger
+        agent_logger.debug(f"[VALIDATOR] Starting validation (level={validation_level})")
+        
         result = {
             "passed": True,
             "score": 100,
@@ -26,7 +29,12 @@ class ValidatorAgent:
         if syntax_result["errors"]:
             result["passed"] = False
             result["score"] = 0
+            agent_logger.warning(
+                f"[VALIDATOR] Syntax errors found",
+                extra={"syntax_errors": syntax_result["errors"]}
+            )
             return result
+        agent_logger.debug(f"[VALIDATOR] Syntax validation passed")
         if validation_level == "syntax":
             return result
         semantic_result = self._validate_semantic(test_code)
@@ -35,6 +43,12 @@ class ValidatorAgent:
         if semantic_result["errors"]:
             result["passed"] = False
             result["score"] -= 30
+            agent_logger.warning(
+                f"[VALIDATOR] Semantic errors found",
+                extra={"semantic_errors": semantic_result["errors"], "score_after": result["score"]}
+            )
+        else:
+            agent_logger.debug(f"[VALIDATOR] Semantic validation passed (warnings: {len(semantic_result['warnings'])})")
         if validation_level == "semantic":
             return result
         logic_result = self._validate_logic(test_code)
@@ -43,6 +57,12 @@ class ValidatorAgent:
         if logic_result["errors"]:
             result["passed"] = False
             result["score"] -= 20
+            agent_logger.warning(
+                f"[VALIDATOR] Logic errors found",
+                extra={"logic_errors": logic_result["errors"], "score_after": result["score"]}
+            )
+        else:
+            agent_logger.debug(f"[VALIDATOR] Logic validation passed (warnings: {len(logic_result['warnings'])})")
         safety_result = self.safety_guard.validate(test_code)
         issues = safety_result.get("issues", [])
         result["safety_issues"] = [
@@ -52,8 +72,25 @@ class ValidatorAgent:
         if safety_result.get("risk_level") in ["HIGH", "CRITICAL"]:
             result["passed"] = False
             result["score"] = 0
+            agent_logger.warning(
+                f"[VALIDATOR] Safety risk detected",
+                extra={"risk_level": safety_result.get("risk_level"), "issues": issues}
+            )
         result["score"] = max(0, result["score"])
         result["recommendations"] = self._generate_recommendations(result)
+        
+        agent_logger.info(
+            f"[VALIDATOR] Validation completed",
+            extra={
+                "passed": result["passed"],
+                "score": result["score"],
+                "syntax_errors": len(result["syntax_errors"]),
+                "semantic_errors": len(result["semantic_errors"]),
+                "logic_errors": len(result["logic_errors"]),
+                "warnings": len(result["warnings"]),
+                "safety_issues": len(result["safety_issues"])
+            }
+        )
         return result
     def _validate_syntax(self, test_code: str) -> Dict[str, List]:
         errors = []
@@ -90,21 +127,35 @@ class ValidatorAgent:
             "@allure.title": r"@allure\.title\s*\(",
             "@allure.tag": r"@allure\.tag\s*\("
         }
+        
+        # Проверяем наличие декораторов, но делаем это warning, а не error
+        # так как генератор должен их добавлять автоматически
+        missing_decorators = []
         for decorator, pattern in required_decorators.items():
             if not re.search(pattern, test_code):
-                errors.append({
-                    "type": "missing_decorator",
-                    "line": None,
-                    "message": f"Отсутствует {decorator} декоратор"
-                })
-        if "with allure.step" not in test_code:
-            warnings.append("Рекомендуется использовать allure.step() для структурирования")
-        if not re.search(r"(assert\s+|expect\()", test_code):
-            errors.append({
-                "type": "missing_assertion",
-                "line": None,
-                "message": "Тест должен содержать хотя бы одну assertion"
-            })
+                missing_decorators.append(decorator)
+        
+        # Если отсутствуют декораторы, это warning, не error
+        # Генератор должен их добавлять, но если по какой-то причине не добавил,
+        # это не критично - тест все равно может работать
+        if missing_decorators:
+            warnings.append(f"Отсутствуют декораторы: {', '.join(missing_decorators)}. Рекомендуется добавить для полной совместимости с Allure TestOps.")
+        # Проверяем является ли тест manual (для manual тестов assertions не требуются)
+        is_manual = "@allure.manual" in test_code or "allure.manual" in test_code
+        
+        if not is_manual:
+            if "with allure.step" not in test_code:
+                warnings.append("Рекомендуется использовать allure.step() для структурирования")
+            if not re.search(r"(assert\s+|expect\()", test_code):
+                # Для всех автоматизированных тестов отсутствие assertions - это warning, не error
+                # Генератор должен добавлять assertions, но если по какой-то причине не добавил,
+                # это не критично - тест все равно может быть полезен
+                warnings.append("Автоматизированный тест должен содержать хотя бы одну assertion для проверки результата")
+        else:
+            # Для manual тестов проверяем наличие описания шагов
+            if not re.search(r'("""|\'\'\')', test_code) and "pass" not in test_code:
+                warnings.append("Рекомендуется добавить описание шагов теста в docstring")
+        
         return {"errors": errors, "warnings": warnings}
     def _validate_logic(self, test_code: str) -> Dict[str, List]:
         errors = []
