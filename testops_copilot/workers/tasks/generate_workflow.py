@@ -60,7 +60,7 @@ def generate_test_cases_task(
             request.status = "processing"
             request.started_at = datetime.utcnow()
             db.commit()
-        redis_client.publish_event(
+            redis_client.publish_event(
             f"request:{request_id}",
             {"status": "processing", "step": "reconnaissance"}
         )
@@ -85,6 +85,7 @@ def generate_test_cases_task(
                 "elements": [],
                 "error": str(e)
             }
+        
         redis_client.publish_event(
             f"request:{request_id}",
             {"status": "processing", "step": "generation"}
@@ -221,7 +222,14 @@ def generate_test_cases_task(
                     match = re.search(r'def\s+(test_\w+)', test_code)
                     if match:
                         test_name = match.group(1)
-                actual_test_type = "automated" if "def test_" in test_code else "manual"
+                
+                # Определяем тип теста: manual если есть @allure.manual, иначе проверяем наличие Playwright кода
+                is_manual = "@allure.manual" in test_code
+                has_playwright = any(keyword in test_code for keyword in [
+                    "page.goto", "page.click", "page.fill", "page.locator",
+                    "expect(", "page.wait_for", "page.get_by", "page: Page"
+                ])
+                actual_test_type = "manual" if is_manual else ("automated" if has_playwright else "automated")
                 
                 validation = test_data.get("validation", {})
                 syntax_errors = len(validation.get("syntax_errors", []))
@@ -268,6 +276,31 @@ def generate_test_cases_task(
             
             # Получаем количество сохраненных тестов из БД
             test_count = db.query(TestCase).filter(TestCase.request_id == request.request_id).count()
+            
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: Если тестов 0, но были сгенерированы - это ошибка
+            if test_count == 0 and len(tests) > 0:
+                error_msg = f"CRITICAL: No tests saved despite {len(tests)} generated! This should not happen."
+                agent_logger.error(
+                    error_msg,
+                    extra={
+                        "request_id": request_id,
+                        "generated_count": len(tests),
+                        "validated_count": len(validated_tests),
+                        "test_type": test_type
+                    }
+                )
+                request.error_message = error_msg
+            elif test_count == 0:
+                error_msg = f"CRITICAL: No tests generated at all!"
+                agent_logger.error(
+                    error_msg,
+                    extra={
+                        "request_id": request_id,
+                        "test_type": test_type,
+                        "requirements": requirements
+                    }
+                )
+                request.error_message = error_msg
             
             request.status = "completed"
             request.completed_at = datetime.utcnow()

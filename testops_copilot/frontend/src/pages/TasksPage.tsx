@@ -1,13 +1,12 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { apiClient } from '../utils/api';
 import { useSSE } from '../hooks/useSSE';
 import type { TaskStatus } from '../types/api';
 
 export default function TasksPage() {
-  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const taskIdParam = searchParams.get('taskId');
+  // Автоматическое переключение задач отключено - taskIdParam больше не используется
 
   const [tasks, setTasks] = useState<TaskStatus[]>([]);
   const [selectedTask, setSelectedTask] = useState<TaskStatus | null>(null);
@@ -39,7 +38,7 @@ export default function TasksPage() {
         // ОБЯЗАТЕЛЬНО проверяем, что request_id совпадает, иначе ИГНОРИРУЕМ
         if (eventRequestId && eventRequestId === selectedTask.request_id) {
           // Обновляем данные выбранной задачи, НЕ переключаемся
-          loadTask(selectedTask.request_id);
+        loadTask(selectedTask.request_id);
         }
         // ВСЕ остальные события ИГНОРИРУЕМ - НЕ переключаемся автоматически
       }

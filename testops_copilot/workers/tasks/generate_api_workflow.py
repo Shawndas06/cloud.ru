@@ -119,11 +119,11 @@ def generate_api_tests_task(
             # Добавляем таймаут для генерации API тестов (максимум 5 минут)
             tests = loop.run_until_complete(
                 asyncio.wait_for(
-                    generator.generate_api_tests(
-                        openapi_spec=spec_dict,
-                        openapi_url=openapi_url,
-                        endpoints=endpoints,
-                        test_types=test_types
+                generator.generate_api_tests(
+                    openapi_spec=spec_dict,
+                    openapi_url=openapi_url,
+                    endpoints=endpoints,
+                    test_types=test_types
                     ),
                     timeout=300.0  # 5 минут таймаут
                 )
@@ -305,6 +305,35 @@ def generate_api_tests_task(
                     "test_id": str(test_case.test_id),
                     "test_name": test_name
                 })
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: Если сохранено 0 тестов - это ошибка
+            if len(saved_tests) == 0:
+                error_msg = f"CRITICAL: No tests saved! generated={len(tests)}, validated={len(validated_tests)}"
+                from shared.utils.logger import agent_logger
+                agent_logger.error(
+                    error_msg,
+                    extra={
+                        "request_id": request_id,
+                        "generated_count": len(tests),
+                        "validated_count": len(validated_tests),
+                        "endpoints": endpoints,
+                        "test_types": test_types
+                    }
+                )
+                request.error_message = error_msg
+            else:
+                # Проверка минимального количества тестов
+                min_tests_required = 10
+                if len(saved_tests) < min_tests_required:
+                    from shared.utils.logger import agent_logger
+                    agent_logger.warning(
+                        f"Low test count: {len(saved_tests)} tests saved, minimum required: {min_tests_required}",
+                        extra={
+                            "request_id": request_id,
+                            "saved_count": len(saved_tests),
+                            "min_required": min_tests_required
+                        }
+                    )
+            
             request.status = "completed"
             request.completed_at = datetime.utcnow()
             request.result_summary = {

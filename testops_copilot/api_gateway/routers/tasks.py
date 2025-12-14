@@ -149,8 +149,8 @@ async def get_task_status(
     # Возвращаем тесты если запрошено, независимо от статуса
     if include_tests:
         try:
-        tests = db.query(TestCase).filter(TestCase.request_id == task_id).all()
-        response_data["tests"] = [
+            tests = db.query(TestCase).filter(TestCase.request_id == task_id).all()
+            response_data["tests"] = [
             {
                 "test_id": str(test.test_id),
                 "test_name": test.test_name,

@@ -45,18 +45,18 @@ docker-compose ps
 
 ```bash
 # Проверка API Gateway
-curl http://213.171.31.204:8000/health
+curl http://localhost:8000/health
 
 # Открыть API документацию
-open http://213.171.31.204:8000/docs
+open http://localhost:8000/docs
 
 # Открыть Frontend
-open http://213.171.31.204:3000
+open http://localhost:3000
 ```
 
 **Шаг 4: Первый тест**
 
-Через Frontend (http://213.171.31.204:3000):
+Через Frontend (http://localhost:3000):
 1. Перейдите на страницу "Генерация"
 2. Выберите вкладку "UI Тесты"
 3. Введите URL: `https://cloud.ru/calculator`
@@ -66,7 +66,7 @@ open http://213.171.31.204:3000
 
 Или через API:
 ```bash
-curl -X POST "http://213.171.31.204:8000/api/v1/generate/test-cases" \
+curl -X POST "http://localhost:8000/api/v1/generate/test-cases" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://cloud.ru/calculator",
@@ -107,7 +107,7 @@ docker-compose exec postgres psql -U testops -d testops_copilot -c "SELECT 1;"
 docker-compose exec redis redis-cli ping
 
 # Flower (Celery monitoring)
-open http://213.171.31.204:5555
+open http://localhost:5555
 ```
 
 **Примечание:** База данных автоматически инициализируется при первом запуске через `scripts/init_db.sql`. Если нужно пересоздать схему, используйте `docker-compose down -v && docker-compose up -d`.
@@ -333,7 +333,7 @@ POST /api/v1/optimize/tests
 }
 ```
 
-Полная документация API доступна по адресу: `http://213.171.31.204:8000/docs`
+Полная документация API доступна по адресу: `http://localhost:8000/docs`
 
 ---
 
@@ -342,7 +342,7 @@ POST /api/v1/optimize/tests
 ### Пример 1: Генерация ручных тест-кейсов для UI калькулятора
 
 ```bash
-curl -X POST "http://213.171.31.204:8000/api/v1/generate/test-cases" \
+curl -X POST "http://localhost:8000/api/v1/generate/test-cases" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://cloud.ru/calculator",
@@ -361,7 +361,7 @@ curl -X POST "http://213.171.31.204:8000/api/v1/generate/test-cases" \
 ### Пример 2: Генерация автоматизированных e2e тестов
 
 ```bash
-curl -X POST "http://213.171.31.204:8000/api/v1/generate/test-cases" \
+curl -X POST "http://localhost:8000/api/v1/generate/test-cases" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://cloud.ru/calculator",
@@ -379,7 +379,7 @@ curl -X POST "http://213.171.31.204:8000/api/v1/generate/test-cases" \
 ### Пример 3: Генерация API тестов для VMs
 
 ```bash
-curl -X POST "http://213.171.31.204:8000/api/v1/generate/api-tests" \
+curl -X POST "http://localhost:8000/api/v1/generate/api-tests" \
   -H "Content-Type: application/json" \
   -d '{
     "openapi_url": "https://compute.api.cloud.ru/openapi.yaml",
@@ -392,13 +392,13 @@ curl -X POST "http://213.171.31.204:8000/api/v1/generate/api-tests" \
 
 ```bash
 # Получить request_id из ответа предыдущего запроса
-curl "http://213.171.31.204:8000/api/v1/tasks/{request_id}?include_tests=true"
+curl "http://localhost:8000/api/v1/tasks/{request_id}?include_tests=true"
 ```
 
 ### Пример 5: Валидация теста
 
 ```bash
-curl -X POST "http://213.171.31.204:8000/api/v1/validate/tests" \
+curl -X POST "http://localhost:8000/api/v1/validate/tests" \
   -H "Content-Type: application/json" \
   -d '{
     "test_code": "@allure.feature(\"Test\")\ndef test_example(): assert True",
@@ -418,8 +418,8 @@ curl -X POST "http://213.171.31.204:8000/api/v1/validate/tests" \
 - `CLOUD_RU_API_KEY` - API ключ для Cloud.ru Evolution Foundation Model (можно получить в настройках проекта)
 
 **Опциональные (имеют значения по умолчанию):**
-- `DATABASE_URL` - URL базы данных (по умолчанию: `postgresql://testops:testops_password@postgres:5432/testops_copilot`)
-- `REDIS_URL` - URL Redis (по умолчанию: `redis://redis:6379/0`)
+- `DATABASE_URL` - URL базы данных (по умолчанию: `postgresql://testops:testops_password@localhost:5432/testops_copilot`)
+- `REDIS_URL` - URL Redis (по умолчанию: `redis://localhost:6379/0`)
 - `CLOUD_RU_FOUNDATION_MODELS_URL` - URL API Foundation Models (по умолчанию: `https://foundation-models.api.cloud.ru/v1`)
 - `CLOUD_RU_DEFAULT_MODEL` - Модель по умолчанию (по умолчанию: `ai-sage/GigaChat3-10B-A1.8B`)
 
@@ -428,11 +428,11 @@ curl -X POST "http://213.171.31.204:8000/api/v1/validate/tests" \
 # Cloud.ru API (ОБЯЗАТЕЛЬНО)
 CLOUD_RU_API_KEY=your_api_key_here
 
-# Database (опционально, используются значения из docker-compose)
-DATABASE_URL=postgresql://testops:testops_password@postgres:5432/testops_copilot
+# Database (опционально, для локального запуска используйте localhost)
+DATABASE_URL=postgresql://testops:testops_password@localhost:5432/testops_copilot
 
-# Redis (опционально)
-REDIS_URL=redis://redis:6379/0
+# Redis (опционально, для локального запуска используйте localhost)
+REDIS_URL=redis://localhost:6379/0
 ```
 
 **Примечание:** При запуске через `docker-compose` большинство настроек уже настроены в `docker-compose.yml`. Вам нужно только указать `CLOUD_RU_API_KEY`.
@@ -528,13 +528,13 @@ celery -A workers.celery_app flower --port=5555
 ### Prometheus метрики
 
 ```bash
-curl http://213.171.31.204:8000/metrics
+curl http://localhost:8000/metrics
 ```
 
 ### Flower (Celery)
 
 ```bash
-open http://213.171.31.204:5555
+open http://localhost:5555
 ```
 
 ### Логи
@@ -629,9 +629,4 @@ docker-compose restart redis celery_worker
 
 - **Документация:** [testops_copilot/docs/](testops_copilot/docs/)
 - **Issues:** Создайте issue в репозитории
-- **API Docs:** http://213.171.31.204:8000/docs
-
----
-
-**Версия:** 1.0.0  
-**Последнее обновление:** 2024
+- **API Docs:** http://localhost:8000/docs

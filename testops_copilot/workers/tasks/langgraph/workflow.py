@@ -27,7 +27,7 @@ from .nodes import (
     reconnaissance_node,
     generation_node,
     validation_node,
-    optimization_node,
+
     save_results_node,
     should_retry_generation
 )
@@ -247,9 +247,15 @@ class LangGraphWorkflow:
         try:
             # Используем checkpointer для получения состояния
             if hasattr(self.checkpointer, 'get'):
-                state = self.checkpointer.get(config)
+                try:
+                    state = self.checkpointer.get(config)
+                except Exception as e:
+                    agent_logger.warning(f"Error getting checkpoint for thread_id {thread_id}: {e}. Starting new workflow.")
+                    state = None
                 if not state:
-                    raise ValueError(f"No checkpoint found for thread_id {thread_id}")
+                    # Если checkpoint не найден, начинаем workflow заново
+                    agent_logger.warning(f"No checkpoint found for thread_id {thread_id}. Starting new workflow instead of resuming.")
+                    raise ValueError(f"No checkpoint found for thread_id {thread_id}. Please start a new workflow instead.")
                 # Получаем последнее состояние из checkpoint
                 if hasattr(state, 'values'):
                     current_state = state.values

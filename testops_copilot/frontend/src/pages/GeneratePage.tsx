@@ -35,7 +35,7 @@ export default function GeneratePage() {
         return;
       }
 
-      const response = await apiClient.generate.testCases({
+      await apiClient.generate.testCases({
         ...uiForm,
         requirements,
       });
@@ -73,7 +73,7 @@ export default function GeneratePage() {
         options: apiForm.options
       };
 
-      const response = await apiClient.generate.apiTests(requestData);
+      await apiClient.generate.apiTests(requestData);
       // Переходим на страницу задач БЕЗ автоматического выбора задачи
       navigate('/tasks');
     } catch (err: any) {

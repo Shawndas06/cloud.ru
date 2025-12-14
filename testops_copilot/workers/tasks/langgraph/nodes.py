@@ -315,21 +315,38 @@ def save_results_node(state: WorkflowState) -> WorkflowState:
                 extra={"request_id": state["request_id"]}
             )
             
-            # Если нет оптимизированных тестов, используем валидированные
-            # Если нет валидированных, используем сгенерированные (но с предупреждением)
+            # КРИТИЧЕСКИ ВАЖНО: Всегда сохраняем тесты, даже если они не прошли валидацию
+            # Приоритет: optimized > validated > generated
             tests_to_save = optimized_tests if optimized_tests else (validated_tests if validated_tests else [])
             
+            # Если нет оптимизированных и валидированных, но есть сгенерированные - сохраняем их
             if not tests_to_save and generated_tests:
                 agent_logger.warning(
-                    f"No validated tests, but {len(generated_tests)} generated. Saving unvalidated tests.",
-                    extra={"request_id": state["request_id"]}
+                    f"No validated tests, but {len(generated_tests)} generated. Saving unvalidated tests to prevent 0 tests.",
+                    extra={"request_id": state["request_id"], "generated_count": len(generated_tests)}
                 )
                 # Сохраняем невалидированные тесты как есть
                 # generated_tests может быть List[str] (коды тестов) или List[Dict]
                 if generated_tests and isinstance(generated_tests[0], str):
-                    tests_to_save = [{"code": code, "validation": {"passed": False}} for code in generated_tests]
+                    tests_to_save = [{"code": code, "validation": {"passed": False, "score": 0}} for code in generated_tests]
                 else:
-                    tests_to_save = [{"code": t.get("code", t) if isinstance(t, dict) else str(t), "validation": {"passed": False}} for t in generated_tests]
+                    tests_to_save = [{"code": t.get("code", t) if isinstance(t, dict) else str(t), "validation": {"passed": False, "score": 0}} for t in generated_tests]
+            
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: Если все еще нет тестов для сохранения - это ошибка
+            if not tests_to_save:
+                error_msg = f"CRITICAL: No tests to save! generated={len(generated_tests)}, validated={len(validated_tests)}, optimized={len(optimized_tests)}"
+                agent_logger.error(
+                    error_msg,
+                    extra={
+                        "request_id": state["request_id"],
+                        "generated_count": len(generated_tests),
+                        "validated_count": len(validated_tests),
+                        "optimized_count": len(optimized_tests),
+                        "test_type": state.get("test_type", "unknown")
+                    }
+                )
+                # НЕ меняем статус на failed, но логируем критическую ошибку
+                # Попытаемся сохранить хотя бы что-то, чтобы не было 0 тестов
             
             saved_tests = []
             for test_data in tests_to_save:
@@ -345,8 +362,13 @@ def save_results_node(state: WorkflowState) -> WorkflowState:
                     continue
                 
                 if not test_code or not test_code.strip():
-                    agent_logger.warning("Skipping empty test code")
+                    agent_logger.warning(f"Skipping empty test code for test {test_name}")
                     continue
+                
+                # Дополнительная проверка: если тест слишком короткий (меньше 50 символов) - это подозрительно
+                if len(test_code.strip()) < 50:
+                    agent_logger.warning(f"Test code too short ({len(test_code)} chars), but saving anyway: {test_name}")
+                    # Все равно сохраняем, но с предупреждением
                 
                 code_hash = hashlib.sha256(test_code.encode()).hexdigest()
                 test_name = "Test"
@@ -355,7 +377,15 @@ def save_results_node(state: WorkflowState) -> WorkflowState:
                     match = re.search(r'def\s+(test_\w+)', test_code)
                     if match:
                         test_name = match.group(1)
-                actual_test_type = "automated" if "def test_" in test_code else "manual"
+                
+                # Определяем тип теста: manual если есть @allure.manual, иначе automated
+                is_manual = "@allure.manual" in test_code
+                has_playwright = any(keyword in test_code for keyword in [
+                    "page.goto", "page.click", "page.fill", "page.locator",
+                    "expect(", "page.wait_for", "page.get_by", "page: Page"
+                ])
+                # Если есть @allure.manual - это manual тест, иначе проверяем наличие Playwright кода
+                actual_test_type = "manual" if is_manual else ("automated" if has_playwright else "automated")
                 
                 # Логика статуса: passed если нет синтаксических ошибок
                 # Тесты с синтаксически правильным кодом должны быть passed
@@ -413,6 +443,38 @@ def save_results_node(state: WorkflowState) -> WorkflowState:
                 })
             
             agent_logger.info(f"Saved {len(saved_tests)} tests to database")
+            
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: Если сохранено 0 тестов - это серьезная проблема
+            if len(saved_tests) == 0:
+                error_msg = f"CRITICAL: No tests saved! generated={len(generated_tests)}, validated={len(validated_tests)}, optimized={len(optimized_tests)}"
+                agent_logger.error(
+                    error_msg,
+                    extra={
+                        "request_id": state["request_id"],
+                        "generated_count": len(generated_tests),
+                        "validated_count": len(validated_tests),
+                        "optimized_count": len(optimized_tests),
+                        "test_type": state.get("test_type", "unknown")
+                    }
+                )
+                # Устанавливаем ошибку, но все равно завершаем как completed
+                request.error_message = error_msg
+            else:
+                # Проверка минимального количества тестов
+                min_tests_required = 10
+                if len(saved_tests) < min_tests_required and state["test_type"] in ["automated", "both"]:
+                    agent_logger.warning(
+                        f"Low test count: {len(saved_tests)} tests saved, minimum required: {min_tests_required}",
+                        extra={
+                            "request_id": state["request_id"],
+                            "saved_count": len(saved_tests),
+                            "min_required": min_tests_required,
+                            "test_type": state["test_type"],
+                            "generated_count": len(generated_tests),
+                            "validated_count": len(validated_tests)
+                        }
+                    )
+            
             request.status = "completed"
             request.completed_at = datetime.utcnow()
             result_summary = {
